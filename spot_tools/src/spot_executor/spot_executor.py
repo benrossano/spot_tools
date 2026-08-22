@@ -150,6 +150,7 @@ class SpotExecutor:
         goal_tolerance=2.8,
         feedback=None,
         use_fake_path_planner=False,
+        follow_timeout_per_meter=6.0,
     ):
         self.debug = False
         self.spot_interface = spot_interface
@@ -161,6 +162,9 @@ class SpotExecutor:
         self.processing_action_sequence = False
         self.mid_level_planner = planner
         self.use_fake_path_planner = use_fake_path_planner
+        self.follow_timeout_per_meter = float(follow_timeout_per_meter)
+        if self.follow_timeout_per_meter <= 0:
+            raise ValueError("follow_timeout_per_meter must be positive")
 
         self.lease_manager = None
 
@@ -304,16 +308,20 @@ class SpotExecutor:
     def execute_pick(self, command, feedback):
         feedback.print("INFO", "Executing `pick` command")
 
-        success = object_grasp(
-            self.spot_interface,
-            self.detector,
-            image_source="frontleft_fisheye_image",
-            user_input=False,
-            semantic_class=command.object_class,
-            feedback=feedback,
-        )
+        symbolic_grasp = getattr(self.spot_interface, "execute_symbolic_grasp", None)
+        if callable(symbolic_grasp):
+            success = symbolic_grasp()
+        else:
+            success = object_grasp(
+                self.spot_interface,
+                self.detector,
+                image_source="frontleft_fisheye_image",
+                user_input=False,
+                semantic_class=command.object_class,
+                feedback=feedback,
+            )
 
-        if self.debug:
+        if self.debug and not callable(symbolic_grasp):
             success, debug_images = success
             sem_img = ski.util.img_as_ubyte(debug_images[0])
             feedback.print(
@@ -360,7 +368,7 @@ class SpotExecutor:
         path_distance = np.sum(
             np.linalg.norm(np.diff(command_to_send[:, :2], axis=0), axis=1)
         )
-        timeout = path_distance * 6
+        timeout = path_distance * self.follow_timeout_per_meter
         feedback.print(
             "INFO",
             f"Using continous follower with params:\n\tlookahead: {self.follower_lookahead}\n\tgoal tolerance: {self.goal_tolerance}\n\ttimeout: {timeout}",
