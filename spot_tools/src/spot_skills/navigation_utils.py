@@ -131,26 +131,31 @@ def follow_trajectory_continuous(
             feedback.print("INFO", "follow_trajectory_continuous timeout")
             return False
 
-        # if mid_level_planner is not None:
         # update path every (couple?) loop
-        mlp_success, planning_output = mid_level_planner.plan_path(
-            waypoints_list[:, :2]
-        )
-        path = planning_output.path_shapely
-        path_wp = planning_output.path_waypoints_metric
-        target_point_metric = planning_output.target_point_metric
-        target_point_global_path_metric = (
-            planning_output.global_path_target_point_metric
-        )
-
-        if feedback is not None and target_point_metric is not None:
-            feedback.print("INFO", f"target_point_metric: {target_point_metric}")
-            feedback.path_follow_MLP_feedback(
-                path_wp,
-                target_point_metric,
-                target_point_global_path_metric,
-                waypoints_list[-1],
+        if mid_level_planner is not None:
+            mlp_success, planning_output = mid_level_planner.plan_path(
+                waypoints_list[:, :2]
             )
+            path = planning_output.path_shapely
+            path_wp = planning_output.path_waypoints_metric
+            target_point_metric = planning_output.target_point_metric
+            target_point_global_path_metric = (
+                planning_output.global_path_target_point_metric
+            )
+
+            if feedback is not None and target_point_metric is not None:
+                feedback.print("INFO", f"target_point_metric: {target_point_metric}")
+                feedback.path_follow_MLP_feedback(
+                    path_wp,
+                    target_point_metric,
+                    target_point_global_path_metric,
+                    waypoints_list[-1],
+                )
+        else:
+            # No mid-level planner (the signature allows None, and SpotExecutor passes
+            # its planner straight through). Fall through to the existing failed-plan
+            # branch, which follows the high-level path directly.
+            mlp_success = False
 
         if not mlp_success:
             feedback.print(
