@@ -168,6 +168,7 @@ def gaze_from_msg(msg):
 def _(action: Gaze):
     msg = ActionMsg()
     msg.action_type = msg.GAZE
+    msg.gaze_frame = action.frame
 
     msg.robot_point.x = action.robot_point[0]
     msg.robot_point.y = action.robot_point[1]
@@ -233,6 +234,7 @@ def pick_from_msg(msg):
 def _(action: Pick):
     msg = ActionMsg()
     msg.action_type = msg.PICK
+    msg.pick_frame = action.frame
 
     msg.robot_point.x = action.robot_point[0]
     msg.robot_point.y = action.robot_point[1]
@@ -297,6 +299,8 @@ def place_from_msg(msg):
 def _(action: Place):
     msg = ActionMsg()
     msg.action_type = msg.PLACE
+    msg.place_frame = action.frame
+    msg.object_class = action.object_class
 
     msg.robot_point.x = action.robot_point[0]
     msg.robot_point.y = action.robot_point[1]

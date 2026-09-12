@@ -93,7 +93,6 @@ def test_place_roundtrip_keeps_id_and_points():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="to_msg(Gaze) never fills gaze_frame")
 def test_gaze_roundtrip_keeps_frame():
     assert (
         roundtrip(Gaze("hamilton/map", np.zeros(3), np.ones(3), "o")).frame
@@ -101,7 +100,6 @@ def test_gaze_roundtrip_keeps_frame():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="to_msg(Pick) never fills pick_frame")
 def test_pick_roundtrip_keeps_frame():
     assert (
         roundtrip(Pick("hamilton/map", "cone", np.zeros(3), np.ones(3), "o")).frame
@@ -109,9 +107,6 @@ def test_pick_roundtrip_keeps_frame():
     )
 
 
-@pytest.mark.xfail(
-    strict=True, reason="to_msg(Place) never fills place_frame or object_class"
-)
 def test_place_roundtrip_keeps_frame_and_class():
     p = roundtrip(Place("hamilton/map", "cone", np.zeros(3), np.ones(3), "o"))
     assert (p.frame, p.object_class) == ("hamilton/map", "cone")

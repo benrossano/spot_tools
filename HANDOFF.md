@@ -55,10 +55,11 @@ six-package `colcon build` line (10 s).
 
 ## What is left, in order
 
-1. **Decide and commit.** Review the diffs above; decisions pending from you: robot-yaml defaults
-   (`path_commitment_weight` 1.0, `follow_progress_timeout` 20 s, `allow_unknown_target` true were
-   used here, all default off in code), whether to fix the Gaze/Pick/Place frame drop in `to_msg`
-   now (recommended before any on-robot pick), place semantics (`object_point` is ignored).
+1. ~~Decide and commit.~~ Done 2026-09-12: the frame drop is fixed (see "Bugs still open"), and the
+   robot configs (`open_set_sim/dcist_launch_system/{config/default,config_generation/base_params}/spot_executor_node.yaml`
+   and the in-repo `example_parms.yaml`) now set `path_commitment_weight: 1.0`,
+   `path_commitment_band: 0.5`, `allow_unknown_target: true`, `follow_progress_timeout: 20.0`.
+   Code defaults stay off. Still yours: place semantics (`object_point` is ignored).
 2. **`robot: ros` dispatch is untested.** `SpotStackExecutor.dispatch_ros` publishes the compiled
    `ActionSequenceMsg` to `/<robot>/omniplanner_node/compiled_plan_out`; run it against the fake
    ROS stack (`tests/ros/fake_nav_harness.py` starts everything except the path publisher) before
@@ -326,12 +327,13 @@ perception); kinematic fake motion was not used for this run (teleport).
 
 ## Bugs still open (each pinned by an xfail test unless noted)
 
-- **Frames are dropped on the wire for Gaze/Pick/Place.** `to_msg` never fills `gaze_frame`,
-  `pick_frame`, `place_frame` (nor `object_class` for Place); `from_msg` reads them back as `""`.
-  `execute_gaze` then uses `gaze_point` directly in Spot's vision frame. Harmless only while
-  `hamilton/map == hamilton/odom`; with Hydra loop closures the gaze/pick approach point is off by
-  the map->odom correction. `Follow` is fine (frame rides in the `Path` header). The heading
-  column of a Follow path is also replaced by the segment direction on the wire (the follower
+- ~~Frames dropped on the wire for Gaze/Pick/Place~~ **fixed 2026-09-12**: `to_msg` now fills
+  `gaze_frame`/`pick_frame`/`place_frame` (+ Place `object_class`), and `execute_gaze` transforms
+  the gaze point from `command.frame` into Spot's vision frame (`SpotExecutor.point_in_vision_frame`,
+  full SE(3) via `transform_point_frame`); a message with an empty frame is still taken as
+  vision-frame with a WARNING. Pick/Place do not use their points yet (`object_grasp` detects in
+  the image, `object_place` drops in place), so nothing else needed transforming. Still true: the
+  heading column of a Follow path is replaced by the segment direction on the wire (the follower
   recomputes heading anyway).
 - `follow_trajectory_continuous(feedback=None)` crashes (signature allows None).
 - `FakeSpot.get_pose()` is `(x, y, z, yaw)`; `Spot.get_pose()` is `(x, y, yaw)`. The follower's

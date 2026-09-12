@@ -19,6 +19,10 @@
         # mid-level planner
         mid_level_planner_type: "astar"   # "astar" or "identity"
         lookahead_distance: 50            # grid cells
+        path_commitment_weight: 1.0       # A* hysteresis toward the previous local path; 0 = stateless
+        path_commitment_band: 0.5         # meters
+        allow_unknown_target: true        # keep a lookahead target in UNKNOWN cells
+        follow_progress_timeout: 20.0     # seconds without progress before a Follow gives up; 0 = off
         occupancy_inflation_radius: 0.2   # meters
         use_fake_path_plan: false
         # cost map: penalizes paths near obstacles (adds proximity cost to A* g_cost)

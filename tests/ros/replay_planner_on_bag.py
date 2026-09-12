@@ -11,7 +11,6 @@ lookahead was unknown. Produce the bag with tests/ros/record_bag_occupancy.sh.
 
 import argparse
 import csv
-import pathlib
 import sys
 import time
 

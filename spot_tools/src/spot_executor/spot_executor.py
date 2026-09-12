@@ -41,6 +41,14 @@ def transform_command_frame(tf_trans, tf_q, command, feedback=None):
     return command
 
 
+def transform_point_frame(tf_trans, tf_q, point):
+    """Map a 3D point through the (translation, quaternion) transform, full SE(3)."""
+    R = Rotation.from_quat([tf_q.x, tf_q.y, tf_q.z, tf_q.w]).as_matrix()
+    p = np.zeros(3)
+    p[: len(point)] = np.asarray(point, dtype=float)[:3]
+    return R @ p + np.asarray(tf_trans, dtype=float)[:3]
+
+
 # The lease manager should run in a separate thread to handle the exchange
 # of the lease e.g., when the tablet takes control of the robot.
 class LeaseManager:
@@ -267,17 +275,31 @@ class SpotExecutor:
 
         self.processing_action_sequence = False
 
+    def point_in_vision_frame(self, point, frame, feedback, what="point"):
+        """Express a command point (given in `frame`) in Spot's vision/odom frame."""
+        if not frame:
+            # legacy messages carried no frame; they were always treated as vision-frame
+            feedback.print(
+                "WARNING",
+                f"{what} has no frame, assuming it is already in <spot_vision_frame>",
+            )
+            return np.asarray(point, dtype=float)
+        t, r = self.transform_lookup("<spot_vision_frame>", frame)
+        return transform_point_frame(t, r, point)
+
     def execute_gaze(self, command, feedback, pick_next=False):
-        # TODO: need to transform command to robot odom frame
         feedback.print("INFO", "Executing `gaze` command")
+        gaze_point = self.point_in_vision_frame(
+            command.gaze_point, command.frame, feedback, what="gaze_point"
+        )
         current_pose = self.spot_interface.get_pose()
-        turn_to_point(self.spot_interface, current_pose, command.gaze_point)
+        turn_to_point(self.spot_interface, current_pose, gaze_point)
         # stow_after = command.stow_after
         stow_after = not pick_next
         success = gaze_at_vision_pose(
-            self.spot_interface, command.gaze_point, stow_after=stow_after
+            self.spot_interface, gaze_point, stow_after=stow_after
         )
-        feedback.gaze_feedback(current_pose, command.gaze_point)
+        feedback.gaze_feedback(current_pose, gaze_point)
         feedback.print("INFO", "Finished `gaze` command")
         return success
 

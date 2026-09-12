@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
 from scipy.spatial.transform import Rotation
 from spot_executor.spot_executor import transform_command_frame
 
@@ -27,7 +26,9 @@ def test_identity_transform_is_a_noop():
 
 
 def test_nx2_path_gets_a_heading_column():
-    out = transform_command_frame(np.array([1.0, 0, 0]), quat(0.5), np.array([[0.0, 0.0], [1.0, 0.0]]))
+    out = transform_command_frame(
+        np.array([1.0, 0, 0]), quat(0.5), np.array([[0.0, 0.0], [1.0, 0.0]])
+    )
     assert out.shape == (2, 3)
     assert np.allclose(out[:, 2], 0.5)
     assert np.allclose(out[0, :2], [1.0, 0.0])
