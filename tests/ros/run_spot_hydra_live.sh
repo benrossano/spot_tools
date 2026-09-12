@@ -13,7 +13,10 @@
 #                                    [--robot hamilton] [--platform smaug] [--domain-id N] [--check]
 #
 # Needs: ADT4_BOSDYN_IP / ADT4_BOSDYN_USERNAME / ADT4_BOSDYN_PASSWORD (or BOSDYN_CLIENT_* + SPOT_IP from
-# the spot-sdk-scripts env.sh), a built zed_wrapper (ZED_WS or ~/zed_ws), the open_set_sim + dcist_ws installs.
+# the spot-sdk-scripts env.sh) and a sourced install that provides hydra_ros, semantic_inference_ros,
+# spot_tools_ros, ianvs, dcist_launch_system and zed_wrapper.
+#   split layout (this desktop):  ADT4_WS=open_set_sim  DCIST_WS=dcist_ws  ZED_WS=~/zed_ws
+#   field layout (one dcist_ws):  ADT4_WS=DCIST_WS=/path/to/dcist_ws, ADT4_ENV=$ADT4_WS/.adt4_env, ZED_WS unset
 set -euo pipefail
 
 OPEN_SET_NAV=${OPEN_SET_NAV_WORKSPACE:-$HOME/research/openset_nav_dir}
@@ -58,21 +61,31 @@ export ADT4_BOSDYN_IP="${ADT4_BOSDYN_IP:-${SPOT_IP:-192.168.80.3}}"
 export ADT4_BOSDYN_USERNAME="${ADT4_BOSDYN_USERNAME:-${BOSDYN_CLIENT_USERNAME:-}}"
 export ADT4_BOSDYN_PASSWORD="${ADT4_BOSDYN_PASSWORD:-${BOSDYN_CLIENT_PASSWORD:-}}"
 export ADT4_WS="$ADT4_WS_DIR"
-export ADT4_ENV="$ADT4_WS_DIR/.adt4_env"
+export ADT4_ENV="${ADT4_ENV:-$ADT4_WS_DIR/.adt4_env}"
 export ADT4_PLATFORM_ID="$PLATFORM"
 export ADT4_ROBOT_NAME="$ROBOT"
 export ADT4_OUTPUT_DIR="$OUT"
-export SPOT_TOOLS_ROS_SHARE="${SPOT_TOOLS_ROS_SHARE:-$DCIST_WS/install/spot_tools_ros/share/spot_tools_ros}"
+# resolve shares through the installed packages so merged and isolated installs both work
+export SPOT_TOOLS_ROS_SHARE="${SPOT_TOOLS_ROS_SHARE:-$(ros2 pkg prefix spot_tools_ros 2>/dev/null || echo /nonexistent)/share/spot_tools_ros}"
 export ZED_WRAPPER_SHARE="${ZED_WRAPPER_SHARE:-$(ros2 pkg prefix zed_wrapper 2>/dev/null || echo /nonexistent)/share/zed_wrapper}"
+LAUNCH_SHARE="$(ros2 pkg prefix dcist_launch_system 2>/dev/null || echo /nonexistent)/share/dcist_launch_system"
 export YOLO_CONFIG_DIR="$ADT4_WS_DIR/.ultralytics"
 export MPLCONFIGDIR="$ADT4_ENV/matplotlib"
 export ROS_LOG_DIR="$OUT/logs/ros"
 export ROS_DOMAIN_ID="$DOMAIN_ID"
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 unset ROS_LOCALHOST_ONLY
-# ROS python nodes (sensor node, YOLOE) need numpy 1.x next to Jazzy's compiled bindings
+# ROS python nodes (sensor node, YOLOE) need numpy 1.x next to Jazzy's compiled bindings; only
+# prepend a compat site when the venv itself ships numpy >= 2
 ROS_NUMPY1_SITE="${ROS_NUMPY1_SITE:-$HOME/.local/lib/python3.12/site-packages}"
-ROS_COMPAT_PYTHONPATH="$ROS_NUMPY1_SITE${PYTHONPATH:+:$PYTHONPATH}"
+VENV_PY="$ADT4_ENV/spark_env/bin/python"
+if "$VENV_PY" -c 'import numpy, sys; sys.exit(0 if int(numpy.__version__.split(".")[0]) >= 2 else 1)' 2>/dev/null; then
+  NEED_NUMPY1_COMPAT=1
+  ROS_COMPAT_PYTHONPATH="$ROS_NUMPY1_SITE${PYTHONPATH:+:$PYTHONPATH}"
+else
+  NEED_NUMPY1_COMPAT=0
+  ROS_COMPAT_PYTHONPATH="${PYTHONPATH:-}"
+fi
 
 # ---------------------------------------------------------------- preflight
 fail=0
@@ -80,13 +93,19 @@ check() { if eval "$2" >/dev/null 2>&1; then echo "  ok    $1"; else echo "  FAI
 echo "Preflight ($ROBOT @ $ADT4_BOSDYN_IP, ZED=$ZED, out=$OUT)"
 check "robot credentials set (ADT4_BOSDYN_USERNAME/PASSWORD)" '[[ -n "$ADT4_BOSDYN_USERNAME" && -n "$ADT4_BOSDYN_PASSWORD" ]]'
 check "robot reachable: ping $ADT4_BOSDYN_IP" "ping -c1 -W2 $ADT4_BOSDYN_IP"
-check "robot answers gRPC (robot-id)" "$ADT4_ENV/spark_env/bin/python -c \"import bosdyn.client; r=bosdyn.client.create_standard_sdk('preflight').create_robot('$ADT4_BOSDYN_IP'); print(r.ensure_client('robot-id').get_id().nickname)\""
+check "venv python $VENV_PY" "test -x $VENV_PY"
+check "robot answers gRPC (robot-id)" "$VENV_PY -c \"import bosdyn.client; r=bosdyn.client.create_standard_sdk('preflight').create_robot('$ADT4_BOSDYN_IP'); print(r.ensure_client('robot-id').get_id().nickname)\""
 check "GPU visible" "nvidia-smi"
 check "YOLOE weights $ADT4_WS/weights/yoloe-26l-seg.pt" "test -f $ADT4_WS/weights/yoloe-26l-seg.pt"
 check "hydra_ros / semantic_inference_ros / spot_tools_ros / ianvs built" "ros2 pkg prefix hydra_ros && ros2 pkg prefix semantic_inference_ros && ros2 pkg prefix spot_tools_ros && ros2 pkg prefix ianvs"
-check "spot_tools_ros + bosdyn importable in the venv" "$ADT4_ENV/spark_env/bin/python -c 'import spot_tools_ros.spot_sensors, bosdyn.client'"
-check "numpy 1.x compat site for ROS python nodes ($ROS_NUMPY1_SITE)" "test -f $ROS_NUMPY1_SITE/numpy/__init__.py"
-check "platform calibration platforms/$PLATFORM/calibration.yaml" "test -f $ADT4_WS/dcist_launch_system/platforms/$PLATFORM/calibration.yaml"
+check "spot_tools_ros + bosdyn importable in the venv" "$VENV_PY -c 'import spot_tools_ros.spot_sensors, bosdyn.client'"
+if ((NEED_NUMPY1_COMPAT)); then
+  check "venv has numpy>=2: numpy 1.x compat site present ($ROS_NUMPY1_SITE)" "test -f $ROS_NUMPY1_SITE/numpy/__init__.py"
+else
+  echo "  ok    venv numpy < 2, no compat site needed"
+fi
+check "platform calibration $LAUNCH_SHARE/platforms/$PLATFORM/calibration.yaml" "test -f $LAUNCH_SHARE/platforms/$PLATFORM/calibration.yaml"
+check "spot URDF $SPOT_TOOLS_ROS_SHARE/urdf/spot.urdf.xacro" "test -f $SPOT_TOOLS_ROS_SHARE/urdf/spot.urdf.xacro"
 if [[ "$ZED" == "local" ]]; then
   check "zed_wrapper built ($ZED_WRAPPER_SHARE)" "test -f $ZED_WRAPPER_SHARE/launch/zed_camera.launch.py"
   check "ZED SDK installed (/usr/local/zed)" "test -d /usr/local/zed"
