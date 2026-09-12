@@ -91,15 +91,19 @@ def main():
     ap.add_argument("--lookahead", type=int, default=50, help="Planner lookahead, grid cells")
     ap.add_argument("--step", type=float, default=0.6, help="Distance advanced per replan, m")
     ap.add_argument("--iters", type=int, default=120)
+    ap.add_argument("--commit", type=float, default=0.0,
+                    help="path_commitment_weight: A* penalty per step off the previous path (0 = off)")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--sweep", action="store_true",
                     help="Run a sensing-radius sweep instead of one run, and skip the plot")
     args = ap.parse_args()
+    planner_kwargs = {"path_commitment_weight": args.commit}
 
     if args.sweep:
         print(f"{'crop (m)':>9} {'outcome':>10} {'replans':>8} {'length':>8} {'max |y|':>8}")
         for crop in (-1, 8.0, 5.0, 4.0, 3.0, 2.0):
-            traj, failures = simulate(crop, args.lookahead, args.step, args.iters)
+            traj, failures = simulate(crop, args.lookahead, args.step, args.iters,
+                                      planner_kwargs=planner_kwargs)
             reached = np.linalg.norm(traj[-1] - np.array(GOAL_XY)) < 0.6
             length = np.linalg.norm(np.diff(traj, axis=0), axis=1).sum()
             outcome = "reached" if reached else ("A* failed" if failures else "livelock")
@@ -107,7 +111,8 @@ def main():
                   f"{np.abs(traj[:, 1]).max():>7.2f}m")
         return
 
-    traj, failures = simulate(args.crop, args.lookahead, args.step, args.iters, args.verbose)
+    traj, failures = simulate(args.crop, args.lookahead, args.step, args.iters, args.verbose,
+                              planner_kwargs=planner_kwargs)
     reached = np.linalg.norm(traj[-1] - np.array(GOAL_XY)) < 0.6
     crossed = traj[:, 0].max() > 0.5  # got past the wall at x = 0
     print(f"replans:            {len(traj) - 1}")
@@ -121,7 +126,7 @@ def main():
     render(traj, reached, args)
 
 
-def simulate(crop, lookahead, step, iters, verbose=False):
+def simulate(crop, lookahead, step, iters, verbose=False, planner_kwargs=None):
     """Closed replan loop. Returns (trajectory Nx2, number of A* failures)."""
     world = build_world()
     feedback = Feedback(verbose)
@@ -142,7 +147,9 @@ def simulate(crop, lookahead, step, iters, verbose=False):
     for it in range(iters):
         occ.set_grid(visible(world, robot, crop), RESOLUTION, homo(*ORIGIN_XY), homo(*robot), 0.0)
         if planner is None:
-            planner = MidLevelPlanner(occ, feedback, lookahead_distance_grid=lookahead)
+            planner = MidLevelPlanner(
+                occ, feedback, lookahead_distance_grid=lookahead, **(planner_kwargs or {})
+            )
 
         ok, out = planner.plan_path(high_level)
         if not ok:

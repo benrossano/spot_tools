@@ -9,20 +9,13 @@ import rclpy.time
 import spot_executor as se
 import tf2_ros
 import yaml
-from cv_bridge import CvBridge
-from heracles_ros_interfaces.srv import UpdateHoldingState
 from nav_msgs.msg import Path
-from nlu_interface_rviz.msg import (
-    ManipulationApprovalRequest,
-    ManipulationApprovalResponse,
-)
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from robot_executor_interface_ros.action_descriptions_ros import from_msg
 from robot_executor_msgs.msg import ActionSequenceMsg
-from ros_system_monitor_msgs.msg import NodeInfoMsg
 from sensor_msgs.msg import Image
 from shapely.geometry import Point
 from spot_executor.fake_spot import FakeSpot
@@ -39,6 +32,28 @@ from robot_executor_interface.mid_level_planner import (
 from spot_tools_ros.fake_spot_ros import FakeSpotRos
 from spot_tools_ros.occupancy_grid_ros_updater import OccupancyGridROSUpdater
 from spot_tools_ros.utils import get_tf_pose, waypoints_to_path
+
+# Optional integrations: the trimmed mapping workspace ships without the rviz
+# approval UI, the system monitor, heracles, or a numpy-2-compatible cv_bridge.
+try:
+    from cv_bridge import CvBridge
+except ImportError:
+    CvBridge = None
+try:
+    from heracles_ros_interfaces.srv import UpdateHoldingState
+except ImportError:
+    UpdateHoldingState = None
+try:
+    from nlu_interface_rviz.msg import (
+        ManipulationApprovalRequest,
+        ManipulationApprovalResponse,
+    )
+except ImportError:
+    ManipulationApprovalRequest = ManipulationApprovalResponse = None
+try:
+    from ros_system_monitor_msgs.msg import NodeInfoMsg
+except ImportError:
+    NodeInfoMsg = None
 
 
 def load_inverse_semantic_id_map_from_label_space(fn):
@@ -136,6 +151,13 @@ class RosFeedbackCollector:
         centroid_y,
         semantic_class,
     ):
+        if self.detection_img_pub is None:
+            self.logger.warning(
+                "No manipulation approval UI available; auto-approving detection"
+            )
+            xy = [centroid_x or 0, centroid_y or 0]
+            return detection_index is not None, xy, detection_index or 0
+
         bridge = CvBridge()
 
         request_msg = ManipulationApprovalRequest()
@@ -176,6 +198,8 @@ class RosFeedbackCollector:
         )
 
     def pick_image_feedback(self, semantic_image, mask_image):
+        if CvBridge is None:
+            return
         bridge = CvBridge()
         semantic_hand_msg = bridge.cv2_to_imgmsg(semantic_image, encoding="passthrough")
         mask_img_msg = bridge.cv2_to_imgmsg(mask_image, encoding="passthrough")
@@ -300,24 +324,27 @@ class RosFeedbackCollector:
             MarkerArray, "~/mlp_target_publisher", qos_profile=latching_qos
         )
 
-        self.detection_img_pub = node.create_publisher(
-            ManipulationApprovalRequest,
-            "~/manipulation_request",
-            qos_profile=latching_qos,
-        )
+        self.detection_img_pub = None
+        if ManipulationApprovalRequest is not None:
+            self.detection_img_pub = node.create_publisher(
+                ManipulationApprovalRequest,
+                "~/manipulation_request",
+                qos_profile=latching_qos,
+            )
+            node.create_subscription(
+                ManipulationApprovalResponse,
+                "~/pick_confirmation",
+                self.pick_confirmation_callback,
+                10,
+            )
 
         self.lease_takeover_publisher = node.create_publisher(String, "~/takeover", 10)
 
-        node.create_subscription(
-            ManipulationApprovalResponse,
-            "~/pick_confirmation",
-            self.pick_confirmation_callback,
-            10,
-        )
-
-        self.holding_client = node.create_client(
-            UpdateHoldingState, "update_holding_state"
-        )
+        self.holding_client = None
+        if UpdateHoldingState is not None:
+            self.holding_client = node.create_client(
+                UpdateHoldingState, "update_holding_state"
+            )
 
         # TODO(aaron): Once we switch logging to python logger,
         # should move into init
@@ -330,6 +357,9 @@ class RosFeedbackCollector:
             fo.write("time,event\n")
 
     def set_robot_holding_state(self, is_holding: bool, object_id: str, timeout=5):
+        if self.holding_client is None:
+            self.logger.warning("UpdateHoldingState service unavailable in this build")
+            return False
         req = UpdateHoldingState.Request()
         req.is_holding = is_holding
         req.id = object_id
@@ -408,6 +438,12 @@ class SpotExecutorRos(Node):
         assert goal_tolerance > 0
         self.get_logger().info(f"{goal_tolerance=}")
 
+        # <= 0 keeps only the path_distance * 6 global timeout
+        self.declare_parameter("follow_progress_timeout", 0.0)
+        follow_progress_timeout = self.get_parameter("follow_progress_timeout").value
+        if follow_progress_timeout <= 0:
+            follow_progress_timeout = None
+
         # Pick/Inspect Skill
         self.declare_parameter("semantic_model_path", "")
         self.declare_parameter("labelspace_path", "")
@@ -466,6 +502,9 @@ class SpotExecutorRos(Node):
         self.declare_parameter("use_cost_map", False)
         self.declare_parameter("cost_map_safe_distance", 0.5)
         self.declare_parameter("cost_map_nearest_obstacle_cost", 5.0)
+        self.declare_parameter("path_commitment_weight", 0.0)
+        self.declare_parameter("path_commitment_band", 0.5)
+        self.declare_parameter("allow_unknown_target", False)
         mid_level_planner_type = self.get_parameter("mid_level_planner_type").value
         lookahead_distance = self.get_parameter("lookahead_distance").value
         assert lookahead_distance > 0
@@ -505,6 +544,15 @@ class SpotExecutorRos(Node):
                     self.occupancy_map,
                     self.feedback_collector,
                     lookahead_distance_grid=lookahead_distance,
+                    path_commitment_weight=self.get_parameter(
+                        "path_commitment_weight"
+                    ).value,
+                    path_commitment_band_m=self.get_parameter(
+                        "path_commitment_band"
+                    ).value,
+                    allow_unknown_target=self.get_parameter(
+                        "allow_unknown_target"
+                    ).value,
                 )
                 self.get_logger().info("Using A* mid-level planner")
             case "identity":
@@ -536,6 +584,7 @@ class SpotExecutorRos(Node):
             else:
                 spot_init_pose2d = np.array([0, 0, 0, 0])
 
+            self.declare_parameter("fake_spot_kinematic", False)
             self.get_logger().info(str(spot_init_pose2d))
             self.get_logger().info("About to initialize fake spot")
             self.spot_interface = FakeSpot(
@@ -543,6 +592,7 @@ class SpotExecutorRos(Node):
                 password=bdai_password,
                 init_pose=spot_init_pose2d,
                 semantic_model_path=None,
+                kinematic=self.get_parameter("fake_spot_kinematic").value,
             )
 
             self.spot_ros_interface = FakeSpotRos(
@@ -577,14 +627,21 @@ class SpotExecutorRos(Node):
             try:
                 return get_tf_pose(self.tf_buffer, parent, child)
             except tf2_ros.TransformException as e:
-                self.get_logger.warn(f"Failed to get transform: {e}")
+                self.get_logger().warn(f"Failed to get transform: {e}")
+                raise
 
         self.tf_lookup_fn = tf_lookup_fn  # TODO: use this to test transformation
 
-        detector = YOLODetector(
-            self.spot_interface,
-            yolo_world_path=detector_model_path,
-        )
+        # No detector path -> navigation-only node; Pick fails cleanly instead of
+        # pulling torch + weights in at startup.
+        detector = None
+        if detector_model_path:
+            detector = YOLODetector(
+                self.spot_interface,
+                yolo_world_path=detector_model_path,
+            )
+        else:
+            self.get_logger().warn("detector_model_path empty, Pick is disabled")
 
         self.spot_executor = se.SpotExecutor(
             self.spot_interface,
@@ -595,6 +652,7 @@ class SpotExecutorRos(Node):
             goal_tolerance,
             self.feedback_collector,
             use_fake_path_plan,
+            follow_progress_timeout=follow_progress_timeout,
         )
         self.spot_executor.initialize_lease_manager(self.feedback_collector)
 
@@ -605,12 +663,13 @@ class SpotExecutorRos(Node):
             10,
         )
 
-        self.heartbeat_pub = self.create_publisher(NodeInfoMsg, "~/node_status", 1)
-        heartbeat_timer_group = MutuallyExclusiveCallbackGroup()
-        timer_period_s = 0.1
-        self.timer = self.create_timer(
-            timer_period_s, self.hb_callback, callback_group=heartbeat_timer_group
-        )
+        if NodeInfoMsg is not None:
+            self.heartbeat_pub = self.create_publisher(NodeInfoMsg, "~/node_status", 1)
+            heartbeat_timer_group = MutuallyExclusiveCallbackGroup()
+            timer_period_s = 0.1
+            self.timer = self.create_timer(
+                timer_period_s, self.hb_callback, callback_group=heartbeat_timer_group
+            )
 
     def hb_callback(self):
         msg = NodeInfoMsg()

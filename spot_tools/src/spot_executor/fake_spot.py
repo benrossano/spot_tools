@@ -133,10 +133,11 @@ class FakeCommandClient:
         self, command, end_time_secs=None, timesync_endpoint=None, lease=None, **kwargs
     ):
         # lease=None, command=None, end_time_secs=None):
-        print("Spot would execute command with params:")
-        print(f"\tlease: {lease}")
-        print(f"\tcommand: {command}")
-        print(f"\tend_time_secs: {end_time_secs}")
+        if not self.fake_spot.kinematic:
+            print("Spot would execute command with params:")
+            print(f"\tlease: {lease}")
+            print(f"\tcommand: {command}")
+            print(f"\tend_time_secs: {end_time_secs}")
 
         move_cmd = command.synchronized_command.HasField("mobility_command")
         if move_cmd:
@@ -150,12 +151,17 @@ class FakeCommandClient:
                 0
             ].pose.angle
 
-            z = self.fake_spot.get_pose()[2]
-            self.fake_spot.set_pose((x, y, z, angle))
+            if self.fake_spot.kinematic:
+                # velocity-limited tracking happens in FakeSpot.step()
+                self.fake_spot.goal_pose = (x, y, angle)
+            else:
+                z = self.fake_spot.get_pose()[2]
+                self.fake_spot.set_pose((x, y, z, angle))
             self.fake_spot.moving = True
             self.fake_spot.last_move_command = time.time()
 
-        time.sleep(0.5)
+        if not self.fake_spot.kinematic:
+            time.sleep(0.5)
 
     def robot_command_feedback(self, cmd_id):
         print("Spot would return command feedback for cmd_id ", cmd_id)
@@ -212,9 +218,23 @@ class FakeSpot:
         password="",
         init_pose=None,
         semantic_model_path=None,
+        kinematic=False,
+        max_linear_vel=0.75,
+        max_angular_vel=0.65,
+        images=None,
+        fake_semantic_class="bag",
     ):
         print("Initialized Fake Spot!")
         self.is_fake = True
+        # camera view -> image path; views not listed fall back to the bundled bag image
+        self.images = dict(images or {})
+        # class the grasp skill looks for in the fake image; None keeps the commanded class
+        self.fake_semantic_class = fake_semantic_class
+        # kinematic: SE2 goals are tracked at bounded speed by step() instead of teleporting
+        self.kinematic = kinematic
+        self.max_linear_vel = max_linear_vel  # m/s
+        self.max_angular_vel = max_angular_vel  # rad/s
+        self.goal_pose = None  # (x, y, yaw) in odom
         self.pose_lock = threading.Lock()
         self.vel_lock = threading.Lock()
         self.robot = FakeRobot(self)
@@ -239,7 +259,21 @@ class FakeSpot:
         #
 
     def step(self, dt):
-        self.update_velocity_control(dt)
+        if self.kinematic and self.goal_pose is not None:
+            self.update_goal_tracking(dt)
+        else:
+            self.update_velocity_control(dt)
+
+    def update_goal_tracking(self, dt):
+        x, y, z, yaw = np.asarray(self.get_pose(), dtype=float)
+        gx, gy, gyaw = self.goal_pose
+        d = np.hypot(gx - x, gy - y)
+        if d > 1e-6:
+            s = min(self.max_linear_vel * dt, d)
+            x, y = x + s * (gx - x) / d, y + s * (gy - y) / d
+        dyaw = (gyaw - yaw + np.pi) % (2 * np.pi) - np.pi
+        yaw += np.clip(dyaw, -self.max_angular_vel * dt, self.max_angular_vel * dt)
+        self.set_pose(np.array([x, y, z, yaw]))
 
     def aquire_lease(self):
         print("Acquiring Lease")
@@ -288,8 +322,11 @@ class FakeSpot:
         return self.get_image(view=view, show=show)
 
     def get_image(self, view="hand_color_image", show=False):
-        with as_file(files(spot_executor.resources).joinpath("bag_image.jpg")) as path:
-            img = cv2.imread(path)
+        if view in self.images:
+            img = cv2.imread(str(self.images[view]))
+        else:
+            with as_file(files(spot_executor.resources).joinpath("bag_image.jpg")) as path:
+                img = cv2.imread(path)
 
         return FakeImageResponse(name=view), img
 

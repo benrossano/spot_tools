@@ -1,4 +1,5 @@
 import numpy as np
+import tf2_ros
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
@@ -50,10 +51,17 @@ class OccupancyGridROSUpdater:
         map_origin = msg.info.origin  # map origin is the lower right corner of the grid in <robot_name>/map frame, with z pinting up
         occ_map = np.array(msg.data, dtype=np.int8).reshape((h, w))
 
-        robot_pose = get_tf_pose(self.tf_buffer, self.odom_frame, self.body_frame)
-        odom_to_robot_map = get_tf_pose(
-            self.tf_buffer, self.odom_frame, occupancy_frame_id
-        )
+        try:
+            robot_pose = get_tf_pose(self.tf_buffer, self.odom_frame, self.body_frame)
+            odom_to_robot_map = get_tf_pose(
+                self.tf_buffer, self.odom_frame, occupancy_frame_id
+            )
+        except tf2_ros.TransformException as e:
+            # an exception here would take the whole node down; skip this grid instead
+            self.feedback.print(
+                "WARNING", f"Skipping occupancy update, TF not available: {e}"
+            )
+            return
 
         # convert to homogeneous transformation matrices
         robot_pose_homo = pose_to_homo(robot_pose[0], robot_pose[1])

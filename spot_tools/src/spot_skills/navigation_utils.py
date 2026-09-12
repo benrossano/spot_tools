@@ -101,6 +101,8 @@ def follow_trajectory_continuous(
     frame_name=VISION_FRAME_NAME,
     stairs=False,
     feedback=None,
+    progress_timeout=None,
+    progress_epsilon=0.1,
 ) -> bool:
     """
     Follows a trajectory by commanding the robot to move to each waypoint in the specified frame.
@@ -111,6 +113,8 @@ def follow_trajectory_continuous(
         robot_state_client (RobotStateClient): Client for receiving robot state.
         occupancy_grid_subscriber (Union[spot_ros_utils.OccupancyGridSubscriber, None], optional): Subscriber for occupancy grid updates. Defaults to None.
         stairs (bool, optional): Flag indicating whether the robot is navigating stairs. Defaults to False.
+        progress_timeout (float, optional): Abort if the distance to the goal has not shrunk by
+            `progress_epsilon` (m) for this many seconds. None keeps only the global timeout.
     Returns:
         bool: True if the trajectory is successfully followed, False otherwise.
     """
@@ -119,6 +123,8 @@ def follow_trajectory_continuous(
 
     end_pt = waypoints_list[-1, :2]
     t0 = time.time()
+    best_distance_from_end = np.inf
+    last_progress_time = t0
     rate = 10
     # TODO: reactive loop, yeild out the loop to get info
     while 1:
@@ -167,6 +173,19 @@ def follow_trajectory_continuous(
         distance_from_end = np.linalg.norm(
             end_pt - np.array([tform_body_in_vision[0], tform_body_in_vision[1]])
         )
+        if distance_from_end < best_distance_from_end - progress_epsilon:
+            best_distance_from_end = distance_from_end
+            last_progress_time = curr_time
+        elif (
+            progress_timeout is not None
+            and curr_time - last_progress_time > progress_timeout
+        ):
+            feedback.print(
+                "INFO",
+                f"No progress toward goal for {progress_timeout}s (best {best_distance_from_end:.2f}m), aborting follow",
+            )
+            return False
+
         if distance_from_end < goal_tolerance:
             feedback.print("INFO", "Spot reached end of path")
             endpoint = math_helpers.SE2Pose(

@@ -5,7 +5,6 @@ from typing import Optional
 import cv2
 import numpy as np
 from bosdyn.api import image_pb2
-from ultralytics import YOLOE
 
 
 @dataclass
@@ -30,6 +29,8 @@ class YOLODetector(Detector):
         print("Initializing YOLOWorld model. ")
         if not yolo_world_path:
             raise ValueError("YOLOWorld model path must be provided.")
+
+        from ultralytics import YOLOE  # heavy (torch); only needed when detecting
 
         self.yolo_model = YOLOE(yolo_world_path)
         custom_classes = ["", "bag", "cone", "pipe"]

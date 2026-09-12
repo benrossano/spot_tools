@@ -201,12 +201,26 @@ class MidLevelPlanner:
         feedback,
         use_fake_path_planner=False,
         lookahead_distance_grid=50,
+        path_commitment_weight=0.0,
+        path_commitment_band_m=0.5,
+        allow_unknown_target=False,
     ):
         self.feedback = feedback
         # poses are 4x4 homogeneous transformation matrix
         self.robot_pose = None  # <robot>/odom frame
         # high level plan is in <robot>/odom frame
         self.lookahead_distance_grid = lookahead_distance_grid  # grid cells
+
+        # Hysteresis between replans: extra A* cost per step for cells farther than
+        # `band` (m) from the previous local path. 0 disables it (stateless replanning).
+        self.path_commitment_weight = path_commitment_weight
+        self.path_commitment_band_m = path_commitment_band_m
+        self.prev_path_metric = None  # Nx2, <robot>/odom frame
+        self.prev_high_level_metric = None
+        self._commitment_cost = None
+        # A* already treats UNKNOWN as traversable; by default the lookahead target is still
+        # pulled back to the nearest observed free cell. True keeps a target in UNKNOWN.
+        self.allow_unknown_target = allow_unknown_target
 
         self.occupancy_map_obj = occupancy_map
 
@@ -251,6 +265,18 @@ class MidLevelPlanner:
         with self.occupancy_map_obj:  # TODO: too ugly, any better way?
             # get robot pose
             self.set_robot_pose()
+
+            if self.occupancy_map is None or self.robot_pose is None:
+                # no occupancy grid received yet: let the follower use the high-level path
+                self.feedback.print(
+                    "WARNING", "No occupancy grid yet, falling back to high level path"
+                )
+                return False, MidLevelPlannerOutput(
+                    target_point_metric=None,
+                    path_shapely=shapely.LineString(high_level_path_metric[:, :2]),
+                    path_waypoints_metric=[],
+                    global_path_target_point_metric=None,
+                )
 
             # convert poses to grid cells
             high_level_path_grid = [
@@ -311,6 +337,7 @@ class MidLevelPlanner:
             )
 
             # plan using a_star
+            self._commitment_cost = self._commitment_cost_map(high_level_path_metric)
             a_star_path_grid = self.a_star(current_point_grid, target_point_grid_proj)
 
             if a_star_path_grid is None:
@@ -318,6 +345,7 @@ class MidLevelPlanner:
                 self.feedback.print(
                     "INFO", "A* failed, falling back to high level path"
                 )
+                self.prev_path_metric = None
                 return False, output
 
             # convert a_star path to metric coordinates
@@ -335,7 +363,44 @@ class MidLevelPlanner:
             a_star_path_execute = a_star_path_metric
             output.path_shapely = shapely.LineString(a_star_path_execute)
             output.path_waypoints_metric = a_star_path_metric
+            self.prev_path_metric = a_star_path_metric.copy()
+            self.prev_high_level_metric = np.array(
+                high_level_path_metric[:, :2], dtype=float
+            )
             return True, output
+
+    def _commitment_cost_map(self, high_level_path_metric):
+        """Per-cell penalty for leaving the previous local path; None when disabled or stale."""
+        if self.path_commitment_weight <= 0 or self.prev_path_metric is None:
+            return None
+        high_level = np.asarray(high_level_path_metric[:, :2], dtype=float)
+        if self.prev_high_level_metric is None or not (
+            self.prev_high_level_metric.shape == high_level.shape
+            and np.allclose(self.prev_high_level_metric, high_level)
+        ):
+            # new Follow command: the old local path is no longer relevant
+            self.prev_path_metric = None
+            return None
+
+        grid = self.occupancy_map
+        res = self.occupancy_map_obj.map_resolution
+        n = len(self.prev_path_metric)
+        pts = np.hstack([self.prev_path_metric, np.zeros((n, 1)), np.ones((n, 1))])
+        in_grid = (invert_pose(self.occupancy_map_obj.map_origin) @ pts.T)[
+            :2
+        ]  # metres, grid axes
+        # +0.5: waypoints are cell corners, keep them in their own cell (grid origin may have moved)
+        j, i = np.floor(in_grid / res + 0.5).astype(int)
+        keep = (i >= 0) & (i < grid.shape[0]) & (j >= 0) & (j < grid.shape[1])
+        if not keep.any():
+            return None
+        on_prev_path = np.zeros(grid.shape, dtype=bool)
+        on_prev_path[i[keep], j[keep]] = True
+        dist_cells = distance_transform_edt(~on_prev_path)
+        band_cells = max(self.path_commitment_band_m / res, 1.0)
+        return (
+            self.path_commitment_weight * np.clip(dist_cells / band_cells, 0.0, 1.0)
+        ).astype(np.float32)
 
     def project_goal_to_grid_naive(self, cell):
         h, w = self.occupancy_map.shape
@@ -387,6 +452,8 @@ class MidLevelPlanner:
 
     def project_goal_observed(self, goal, path_shapely, epsilon=0):
         if self.is_free(goal):
+            return goal
+        if self.allow_unknown_target and self.occupancy_map[goal[0], goal[1]] == -1:
             return goal
         free_cells = np.argwhere(self.occupancy_map == 0)
         if free_cells.size == 0:
@@ -481,6 +548,15 @@ class MidLevelPlanner:
 
         rows, cols = self.occupancy_map.shape
 
+        # per-step penalties on top of unit distance: obstacle proximity and path commitment
+        extra_cost = self.occupancy_map_obj.proximity_cost_map
+        if self._commitment_cost is not None:
+            extra_cost = (
+                self._commitment_cost
+                if extra_cost is None
+                else extra_cost + self._commitment_cost
+            )
+
         def is_valid(cell):
             return 0 <= cell[0] < rows and 0 <= cell[1] < cols
 
@@ -527,8 +603,8 @@ class MidLevelPlanner:
                     continue
 
                 prox_cost = (
-                    self.occupancy_map_obj.proximity_cost_map[neighbor[0], neighbor[1]]
-                    if self.occupancy_map_obj.proximity_cost_map is not None
+                    extra_cost[neighbor[0], neighbor[1]]
+                    if extra_cost is not None
                     else 0.0
                 )
                 tentative_g_cost = g_cost[current] + 1 + prox_cost

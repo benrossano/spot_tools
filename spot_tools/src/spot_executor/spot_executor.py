@@ -24,9 +24,10 @@ from spot_skills.navigation_utils import (
 
 
 def transform_command_frame(tf_trans, tf_q, command, feedback=None):
-    # command is Nx3 numpy array
-
-    command = deepcopy(command)
+    # command is Nx3 (x, y, heading); an Nx2 path gets a zero heading column
+    command = np.asarray(deepcopy(command), dtype=float)
+    if command.ndim == 2 and command.shape[1] == 2:
+        command = np.hstack([command, np.zeros((len(command), 1))])
     R = Rotation.from_quat([tf_q.x, tf_q.y, tf_q.z, tf_q.w])
     _, _, yaw = R.as_euler("xyz", degrees=False)
 
@@ -140,12 +141,14 @@ class SpotExecutor:
         goal_tolerance=2.8,
         feedback=None,
         use_fake_path_planner=False,
+        follow_progress_timeout=None,
     ):
         self.debug = False
         self.spot_interface = spot_interface
         self.transform_lookup = transform_lookup
         self.follower_lookahead = follower_lookahead
         self.goal_tolerance = goal_tolerance
+        self.follow_progress_timeout = follow_progress_timeout
         self.detector = detector
         self.keep_going = True
         self.processing_action_sequence = False
@@ -375,5 +378,6 @@ class SpotExecutor:
                 timeout,
                 self.mid_level_planner,
                 feedback=feedback,
+                progress_timeout=self.follow_progress_timeout,
             )
         return ret

@@ -14,7 +14,6 @@ from bosdyn.api.spot import door_pb2
 from bosdyn.client import frame_helpers
 from bosdyn.client.door import DoorClient
 from bosdyn.client.manipulation_api_client import ManipulationApiClient
-from ultralytics import YOLOWorld
 
 from spot_skills.primitives import execute_recovery_action
 from spot_skills.skills_definitions import OpenDoorFeedback, OpenDoorParams
@@ -365,6 +364,8 @@ def execute_open_door(
     }
 
     # S4: Load the model and pass it to the request manager, which detects the door handle and hinge
+    from ultralytics import YOLOWorld
+
     model = YOLOWorld(model_path)
 
     request_manager = RequestManager(image_dict, model)
@@ -411,6 +412,8 @@ def execute_open_door(
 
 
 def test_detect(model_path):
+    from ultralytics import YOLOWorld
+
     model = YOLOWorld(model_path)
 
     for idx in range(0, 32):

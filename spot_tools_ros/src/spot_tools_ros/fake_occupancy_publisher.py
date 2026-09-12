@@ -46,7 +46,8 @@ class FakeOccupancyPublisher(Node):
             try:
                 return get_tf_pose(self.tf_buffer, parent, child)
             except tf2_ros.TransformException as e:
-                self.get_logger.warn(f"Failed to get transform: {e}")
+                self.get_logger().warn(f"Failed to get transform: {e}")
+                raise
 
         self.tf_lookup_fn = tf_lookup_fn  # TODO: use this to test transformation
 
@@ -161,7 +162,13 @@ class FakeOccupancyPublisher(Node):
 
         msg.info.origin.orientation.w = 1.0
         if crop_to_robot:
-            robot_pose_odom_frame = self.tf_lookup_fn(self.odom_frame, self.robot_frame)
+            try:
+                robot_pose_odom_frame = self.tf_lookup_fn(
+                    self.odom_frame, self.robot_frame
+                )
+            except tf2_ros.TransformException:
+                # robot TF not up yet (executor starts after us); publish on the next tick
+                return
             msg.data = self.crop_around_robot(robot_pose_odom_frame, msg.info.origin)
         else:
             msg.data = self.occupancy_grid.flatten().tolist()
