@@ -79,12 +79,11 @@ unset ROS_LOCALHOST_ONLY
 # prepend a compat site when the venv itself ships numpy >= 2
 ROS_NUMPY1_SITE="${ROS_NUMPY1_SITE:-$HOME/.local/lib/python3.12/site-packages}"
 VENV_PY="$ADT4_ENV/spark_env/bin/python"
-if "$VENV_PY" -c 'import numpy, sys; sys.exit(0 if int(numpy.__version__.split(".")[0]) >= 2 else 1)' 2>/dev/null; then
+NEED_NUMPY1_COMPAT=0
+ROS_COMPAT_PYTHONPATH="${PYTHONPATH:-}"
+if [[ -x "$VENV_PY" ]] && "$VENV_PY" -c 'import numpy, sys; sys.exit(0 if int(numpy.__version__.split(".")[0]) >= 2 else 1)' 2>/dev/null; then
   NEED_NUMPY1_COMPAT=1
   ROS_COMPAT_PYTHONPATH="$ROS_NUMPY1_SITE${PYTHONPATH:+:$PYTHONPATH}"
-else
-  NEED_NUMPY1_COMPAT=0
-  ROS_COMPAT_PYTHONPATH="${PYTHONPATH:-}"
 fi
 
 # ---------------------------------------------------------------- preflight
@@ -101,7 +100,7 @@ check "hydra_ros / semantic_inference_ros / spot_tools_ros / ianvs built" "ros2 
 check "spot_tools_ros + bosdyn importable in the venv" "$VENV_PY -c 'import spot_tools_ros.spot_sensors, bosdyn.client'"
 if ((NEED_NUMPY1_COMPAT)); then
   check "venv has numpy>=2: numpy 1.x compat site present ($ROS_NUMPY1_SITE)" "test -f $ROS_NUMPY1_SITE/numpy/__init__.py"
-else
+elif [[ -x "$VENV_PY" ]]; then
   echo "  ok    venv numpy < 2, no compat site needed"
 fi
 check "platform calibration $LAUNCH_SHARE/platforms/$PLATFORM/calibration.yaml" "test -f $LAUNCH_SHARE/platforms/$PLATFORM/calibration.yaml"
