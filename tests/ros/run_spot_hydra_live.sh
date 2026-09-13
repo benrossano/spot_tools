@@ -19,7 +19,10 @@
 #   field layout (one dcist_ws):  ADT4_WS=DCIST_WS=/path/to/dcist_ws, ADT4_ENV=$ADT4_WS/.adt4_env, ZED_WS unset
 set -euo pipefail
 
-OPEN_SET_NAV=${OPEN_SET_NAV_WORKSPACE:-$HOME/research/openset_nav_dir}
+# Fall back to the checkout this script lives in rather than a fixed path:
+# .../<workspace>/open_set_sim/spot_tools/tests/ros/ -> <workspace>
+_SELF_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+OPEN_SET_NAV=${OPEN_SET_NAV_WORKSPACE:-$(cd "$_SELF_DIR/../../../.." && pwd)}
 ADT4_WS_DIR=${ADT4_WS:-$OPEN_SET_NAV/open_set_sim}
 DCIST_WS=${DCIST_WS:-$OPEN_SET_NAV/dcist_ws}
 ZED_WS=${ZED_WS:-$HOME/zed_ws}
@@ -52,7 +55,7 @@ done
 # ---------------------------------------------------------------- environment
 set +u
 source /opt/ros/jazzy/setup.bash
-source "$ADT4_WS_DIR/install/setup.bash"
+[[ -f "$ADT4_WS_DIR/install/setup.bash" ]] && source "$ADT4_WS_DIR/install/setup.bash"
 source "$DCIST_WS/install/setup.bash"
 [[ -f "$ZED_WS/install/setup.bash" ]] && source "$ZED_WS/install/setup.bash"
 set -u

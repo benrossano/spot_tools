@@ -34,7 +34,7 @@ mkdir -p "$OUT/logs"
 
 set +u
 source /opt/ros/jazzy/setup.bash
-source "$ADT4_WS_DIR/install/setup.bash"
+[[ -f "$ADT4_WS_DIR/install/setup.bash" ]] && source "$ADT4_WS_DIR/install/setup.bash"
 source "$DCIST_WS/install/setup.bash"
 set -u
 export ADT4_WS="$ADT4_WS_DIR"
