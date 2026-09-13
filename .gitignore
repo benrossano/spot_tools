@@ -4,3 +4,4 @@ data
 *.pyc
 *.swp
 spot_tools_env/
+.vscode/
