@@ -66,6 +66,7 @@ setup(
             "spot_executor_node = spot_tools_ros.spot_executor_ros:main",
             "spot_twist_node = spot_tools_ros.spot_twist_node:main",
             "spot_sensor_node = spot_tools_ros.spot_sensors:main",
+            "fiducial_localizer_node = spot_tools_ros.fiducial_localizer_node:main",
             "fake_occupancy_publisher = spot_tools_ros.fake_occupancy_publisher:main",
             "fake_path_publisher = spot_tools_ros.fake_path_publisher:main",
         ],

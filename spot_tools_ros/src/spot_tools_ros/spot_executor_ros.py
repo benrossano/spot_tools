@@ -493,6 +493,10 @@ class SpotExecutorRos(Node):
         # Robot Initialization
         self.declare_parameter("use_fake_spot_interface", False)
         use_fake_spot_interface = self.get_parameter("use_fake_spot_interface").value
+        self.get_logger().info(
+            f"{use_fake_spot_interface=} (override present: "
+            f"{'use_fake_spot_interface' in self._parameter_overrides})"
+        )
 
         # mid-level planner parameters
         self.declare_parameter("mid_level_planner_type", "identity")
@@ -635,7 +639,8 @@ class SpotExecutorRos(Node):
         # No detector path -> navigation-only node; Pick fails cleanly instead of
         # pulling torch + weights in at startup.
         detector = None
-        if detector_model_path:
+        # 'none' as well as '': ros2 launch rejects `arg:=` with an empty value
+        if detector_model_path and detector_model_path.lower() != "none":
             detector = YOLODetector(
                 self.spot_interface,
                 yolo_world_path=detector_model_path,
