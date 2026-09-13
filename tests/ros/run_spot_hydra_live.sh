@@ -111,7 +111,7 @@ check "spot URDF $SPOT_TOOLS_ROS_SHARE/urdf/spot.urdf.xacro" "test -f $SPOT_TOOL
 if [[ "$ZED" == "local" ]]; then
   check "zed_wrapper built ($ZED_WRAPPER_SHARE)" "test -f $ZED_WRAPPER_SHARE/launch/zed_camera.launch.py"
   check "ZED SDK installed (/usr/local/zed)" "test -d /usr/local/zed"
-  check "ZED on USB (vendor 2b03)" "lsusb | grep -qi 2b03"
+  check "ZED on USB (vendor 2b03)" '[[ "$(lsusb)" == *2b03* || "$(lsusb)" == *2B03* ]]'
 fi
 check "launch file resolves" "ros2 launch dcist_launch_system master.launch.yaml conf_name:=default sim_time:=false robot_name:=$ROBOT launch_hydra:=true launch_spot_camera_driver:=true --print"
 ((fail)) && { echo "preflight failed; fix the FAIL lines above" >&2; exit 1; }
@@ -144,10 +144,19 @@ launch=(ros2 launch dcist_launch_system master.launch.yaml conf_name:=default si
 echo "[1/6] Spot sensors + robot state + calibration TFs"
 env PYTHONPATH="$ROS_COMPAT_PYTHONPATH" "${launch[@]}" launch_spot_camera_driver:=true launch_spot_state_publisher:=true \
   launch_calibration_publisher:=true launch_spot_base_link:=true >"$OUT/logs/spot_sensors.log" 2>&1 & pids+=("$!")
+# Capture first, then match. Under `set -o pipefail` a `tf2_echo | grep -q`
+# pipeline can never report success: tf2_echo streams until killed, so grep -q
+# always exits on the first match and SIGPIPEs it, and pipefail surfaces that
+# 141 as the pipeline's status. The check then fails even though the TF is up.
+have_robot_tf() {
+  local out
+  out="$(timeout 3 ros2 run tf2_ros tf2_echo "$ROBOT/odom" "$ROBOT/body" 2>/dev/null || true)"
+  [[ "$out" == *Translation* ]]
+}
 for _ in {1..60}; do
-  timeout 3 ros2 run tf2_ros tf2_echo $ROBOT/odom $ROBOT/body 2>/dev/null | grep -q Translation && break; sleep 1
+  have_robot_tf && break; sleep 1
 done
-timeout 3 ros2 run tf2_ros tf2_echo $ROBOT/odom $ROBOT/body 2>/dev/null | grep -q Translation \
+have_robot_tf \
   || { echo "no $ROBOT/odom -> $ROBOT/body TF after 60 s; see $OUT/logs/spot_sensors.log" >&2; exit 1; }
 echo "      robot TF up"
 
@@ -157,10 +166,27 @@ if [[ "$ZED" == "local" ]]; then
 else
   echo "[2/6] ZED: expecting /$ROBOT/${ROBOT}_zed/* from elsewhere"
 fi
-for _ in {1..90}; do timeout 3 ros2 topic echo --once /$ROBOT/${ROBOT}_zed/rgb/camera_info >/dev/null 2>&1 && break; sleep 1; done
-timeout 3 ros2 topic echo --once /$ROBOT/${ROBOT}_zed/rgb/camera_info >/dev/null 2>&1 \
-  || { echo "no ZED camera_info after 90 s; see $OUT/logs/zed.log" >&2; exit 1; }
-echo "      ZED publishing"
+# The RGB topic moved between zed-ros2-wrapper versions: older builds publish
+# rgb/camera_info, current ones rgb/color/rect/camera_info. Accept either, so
+# this does not silently wait out its timeout after a wrapper upgrade.
+ZED_RGB_INFO_CANDIDATES=(
+  "/$ROBOT/${ROBOT}_zed/rgb/color/rect/camera_info"
+  "/$ROBOT/${ROBOT}_zed/rgb/camera_info"
+)
+have_zed_info() {
+  local topic
+  for topic in "${ZED_RGB_INFO_CANDIDATES[@]}"; do
+    if timeout 3 ros2 topic echo --once "$topic" >/dev/null 2>&1; then
+      ZED_RGB_INFO="$topic"
+      return 0
+    fi
+  done
+  return 1
+}
+for _ in {1..90}; do have_zed_info && break; sleep 1; done
+have_zed_info \
+  || { echo "no ZED camera_info after 90 s (tried: ${ZED_RGB_INFO_CANDIDATES[*]}); see $OUT/logs/zed.log" >&2; exit 1; }
+echo "      ZED publishing ($ZED_RGB_INFO)"
 
 echo "[3/6] YOLOE instance segmentation"
 env PYTHONPATH="$ROS_COMPAT_PYTHONPATH" "${launch[@]}" launch_instance_segmentation:=true >"$OUT/logs/semantic.log" 2>&1 & pids+=("$!")
@@ -175,7 +201,7 @@ if ((RVIZ)); then
 fi
 if ((RECORD)); then
   topics=(/tf /tf_static /$ROBOT/odom /$ROBOT/joint_states /$ROBOT/hydra/tsdf/occupancy /$ROBOT/hydra/backend/dsg)
-  ((RECORD_IMAGES)) && topics+=(/$ROBOT/${ROBOT}_zed/rgb/image_rect_color /$ROBOT/${ROBOT}_zed/depth/depth_registered /$ROBOT/${ROBOT}_zed/rgb/camera_info /$ROBOT/${ROBOT}_zed/depth/camera_info)
+  ((RECORD_IMAGES)) && topics+=(/$ROBOT/${ROBOT}_zed/rgb/color/rect/image /$ROBOT/${ROBOT}_zed/depth/depth_registered "$ZED_RGB_INFO" /$ROBOT/${ROBOT}_zed/depth/camera_info)
   ros2 bag record -o "$OUT/bag" --storage mcap "${topics[@]}" >"$OUT/logs/record.log" 2>&1 & pids+=("$!")
 fi
 
