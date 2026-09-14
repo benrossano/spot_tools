@@ -1,4 +1,4 @@
-"""Closed-loop replanning against a partially observed synthetic wall (HANDOFF.md)."""
+"""Closed-loop replanning against a partially observed synthetic wall (open_set_sim/docs/spot_tools_handoff.md)."""
 
 import numpy as np
 import pytest
@@ -18,7 +18,7 @@ def test_reaches_goal_when_sensing_covers_the_lookahead(crop):
 
 @pytest.mark.slow
 @pytest.mark.xfail(
-    strict=True, reason="livelock when sensing radius < lookahead; see HANDOFF.md"
+    strict=True, reason="livelock when sensing radius < lookahead; see open_set_sim/docs/spot_tools_handoff.md"
 )
 @pytest.mark.parametrize("crop", [4.0, 3.0, 2.0])
 def test_reaches_goal_when_sensing_is_shorter_than_the_lookahead(crop):
