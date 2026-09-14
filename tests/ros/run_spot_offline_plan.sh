@@ -14,7 +14,11 @@
 #
 #   tests/ros/run_spot_offline_plan.sh [--map DIR] [--manifest FILE] [--out DIR] [--robot hamilton] [--platform smaug]
 #                                      [--fake] [--fake-anchor "X Y YAW"] [--fake-start "X Y YAW"] [--fake-teleport]
-#                                      [--no-rviz] [--no-dispatch] [--watch-s N] [--domain-id N] [--check]
+#                                      [--no-rviz] [--no-dispatch] [--watch-s N] [--domain-id N] [--check] [--explore]
+#
+# --explore replaces the static grid with occupancy_mapper_node (the prior grid grown from live depth) and
+# starts keyframe_recorder_node (RGB-D keyframes in the archive layout under <out>/live_agents, the
+# perception service's live stream). Exports OPEN_SET_LIVE_AGENTS for manifests. Neither needs Hydra.
 #
 # --fake runs everything except the robot: the executor drives an in-process FakeSpot whose odom frame is offset
 # from the map by --fake-anchor (default the launch file's verification TF, 5 10 1.57) and which starts at the
@@ -45,12 +49,14 @@ DISPATCH=1
 WATCH_S=0
 DOMAIN_ID="${ROS_DOMAIN_ID:-88}"   # agrees with scripts/spot_env.sh; --domain-id overrides
 CHECK_ONLY=0
+EXPLORE=0
 while (($#)); do
   case "$1" in
     --map) MAP="$2"; shift 2 ;;
     --manifest) MANIFEST="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --robot) ROBOT="$2"; shift 2 ;;
+    --explore) EXPLORE=1; shift ;;
     --platform) PLATFORM="$2"; shift 2 ;;
     --fake) FAKE=1; shift ;;
     --fake-anchor) FAKE=1; FAKE_ANCHOR="$2"; shift 2 ;;
@@ -67,6 +73,8 @@ while (($#)); do
 done
 MAP="$(realpath "$MAP")"
 [[ -z "$OUT" ]] && OUT="$ADT4_OUTPUT_ROOT/spot_offline_$(date +%Y%m%d_%H%M%S)"
+# growing keyframe directory (exploration); manifests reference it as ${OPEN_SET_LIVE_AGENTS}
+export OPEN_SET_LIVE_AGENTS="${OPEN_SET_LIVE_AGENTS:-$OUT/live_agents}"
 
 # ---------------------------------------------------------------- environment
 # every secret (robot login, API keys) lives in one file at the workspace root; see secrets.env.example
@@ -116,6 +124,9 @@ echo "Preflight ($ROBOT, map=$MAP, mode=$( ((FAKE)) && echo fake || echo real), 
 check "venv python $OPEN_SET_PYTHON" "test -x $OPEN_SET_PYTHON"
 check "spot_tools_ros + dcist_launch_system installed" "ros2 pkg prefix spot_tools_ros && ros2 pkg prefix dcist_launch_system"
 check "new nodes installed (rebuild dcist_ws if not)" "ros2 pkg executables spot_tools_ros | grep -q fiducial_localizer_node && ros2 pkg executables dcist_launch_system | grep -q static_occupancy_publisher_node"
+if ((EXPLORE)); then
+  check "exploration nodes installed (occupancy_mapper_node, keyframe_recorder_node)" "ros2 pkg executables dcist_launch_system | grep -q occupancy_mapper_node && ros2 pkg executables spot_tools_ros | grep -q keyframe_recorder_node"
+fi
 check "recorded occupancy $MAP/occupancy_static.npz" "test -f $MAP/occupancy_static.npz"
 check "recorded DSG $MAP/hydra/backend/dsg.json" "test -f $MAP/hydra/backend/dsg.json"
 if ((DISPATCH)); then
@@ -217,8 +228,18 @@ else
   echo "      robot TF up"
 fi
 
-echo "[2/6] static occupancy grid from $MAP"
-env PYTHONPATH="$ROS_COMPAT_PYTHONPATH" "${launch[@]}" launch_static_occupancy_publisher:=true >"$OUT/logs/occupancy.log" 2>&1 & pids+=("$!")
+if ((EXPLORE)); then
+  echo "[2/6] exploration: occupancy_mapper (prior $MAP grown from live depth) + keyframe_recorder -> $OPEN_SET_LIVE_AGENTS"
+  mkdir -p "$OPEN_SET_LIVE_AGENTS"
+  # no camera in fake mode: the recorder never writes camera_calib.json, which manifests pin the live
+  # stream's calibration from; seed it from the prior so the pipeline can be exercised end to end
+  ((FAKE)) && [[ ! -f "$OPEN_SET_LIVE_AGENTS/camera_calib.json" && -f "$MAP/agents/camera_calib.json" ]] && cp "$MAP/agents/camera_calib.json" "$OPEN_SET_LIVE_AGENTS/"
+  env PYTHONPATH="$ROS_COMPAT_PYTHONPATH" "${launch[@]}" launch_occupancy_mapper:=true launch_keyframe_recorder:=true \
+    keyframe_dir:="$OPEN_SET_LIVE_AGENTS" >"$OUT/logs/occupancy.log" 2>&1 & pids+=("$!")
+else
+  echo "[2/6] static occupancy grid from $MAP"
+  env PYTHONPATH="$ROS_COMPAT_PYTHONPATH" "${launch[@]}" launch_static_occupancy_publisher:=true >"$OUT/logs/occupancy.log" 2>&1 & pids+=("$!")
+fi
 grid_up=0
 for _ in {1..15}; do have_topic "/$ROBOT/hydra/tsdf/occupancy" && { grid_up=1; break; }; sleep 1; done
 ((grid_up)) || { echo "no /$ROBOT/hydra/tsdf/occupancy after ~90 s; see $OUT/logs/occupancy.log" >&2; exit 1; }
