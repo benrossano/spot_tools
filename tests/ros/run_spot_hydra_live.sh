@@ -14,15 +14,15 @@
 #
 # Needs: ADT4_BOSDYN_IP / ADT4_BOSDYN_USERNAME / ADT4_BOSDYN_PASSWORD (or BOSDYN_CLIENT_* + SPOT_IP from
 # the spot-sdk-scripts env.sh) and a sourced install that provides hydra_ros, semantic_inference_ros,
-# spot_tools_ros, ianvs, dcist_launch_system and zed_wrapper.
-#   split layout (this desktop):  ADT4_WS=open_set_sim  DCIST_WS=dcist_ws  ZED_WS=~/zed_ws
-#   field layout (one dcist_ws):  ADT4_WS=DCIST_WS=/path/to/dcist_ws, ADT4_ENV=$ADT4_WS/.adt4_env, ZED_WS unset
+# spot_tools_ros, ianvs, dcist_launch_system and zed_wrapper. The ZED driver (zed-ros2-wrapper) is
+# built inside dcist_ws like everything else; export ZED_WS only if you keep it in a separate
+# colcon workspace, and that install is sourced on top.
 set -euo pipefail
 
 # Fall back to the checkout this script lives in rather than a fixed path:
 # .../<workspace>/open_set_sim/spot_tools/tests/ros/ -> <workspace>
 _SELF_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
-# All roots (workspace, dcist_ws, venv, ZED workspace) from the shared registry.
+# All roots (workspace, dcist_ws, venv) from the shared registry.
 # shellcheck disable=SC1091
 source "$_SELF_DIR/../../../scripts/lib/paths.sh"
 OPEN_SET_NAV=${OPEN_SET_NAV_WORKSPACE:-$OPEN_SET_WORKSPACE_ROOT}
@@ -58,7 +58,7 @@ set +u
 source /opt/ros/jazzy/setup.bash
 [[ -f "$ADT4_WS_DIR/install/setup.bash" ]] && source "$ADT4_WS_DIR/install/setup.bash"
 source "$DCIST_WS/install/setup.bash"
-[[ -f "$ZED_WS/install/setup.bash" ]] && source "$ZED_WS/install/setup.bash"
+[[ -n "${ZED_WS:-}" && -f "$ZED_WS/install/setup.bash" ]] && source "$ZED_WS/install/setup.bash"
 set -u
 # robot credentials: <workspace>/secrets.env (see open_set_sim/secrets.env.example), else whatever is exported
 if [[ -f "$OPEN_SET_NAV/secrets.env" ]]; then
