@@ -1,6 +1,24 @@
 # Handoff — Spot navigation stack: test pipeline and on-robot readiness
 
-Written 2026-09-11, updated 2026-09-12 at the end of the session. **Start here.**
+Written 2026-09-11, updated 2026-09-12; status block added 2026-09-14. **Start here.**
+
+## Status 2026-09-14 (read this first; the sections below are the history)
+
+Everything in this file is committed and pushed (spot_tools, open_set_navigation, open_set_sim).
+The current entry point for running the robot is `open_set_sim/docs/spot_recorded_map_planning.md`.
+
+- **Real robot, 2026-09-13: `robot: ros` dispatch verified end to end.** Fiducial localization on
+  AprilTag 1, static occupancy from the recorded tour (no live Hydra), executor A* + SE2 follow to a
+  grounded "trash bin", result topic `success: true`. The interactive open-set chat
+  (`open-set-viewer`, manifest `spot_live_open_set.yaml`) came up on the robot; its LLM turn still
+  needs `ADT4_OPENAI_API_KEY` in `<workspace>/secrets.env`.
+- **Not yet on the real robot:** Pick/Place (fake runs only) and the GraphNav-assisted Follow
+  (section near the end).
+- **Environment:** `source open_set_sim/scripts/spot_env.sh` does every export (roots from
+  `scripts/lib/paths.sh` + `../paths.env`, secrets from `../secrets.env`, ROS + `dcist_ws`, venv on
+  PATH). One venv, one numpy: `scripts/setup.sh` rebuilds `cv_bridge` against it. Paths of the form
+  `~/research/openset_nav_dir` in older sections are this workspace's previous location; read them
+  as `$OPEN_SET_WORKSPACE_ROOT` (`open_set_sim/scripts/check_paths.sh` prints every root).
 
 ## Where things stand (one screen)
 
@@ -19,7 +37,7 @@ Written 2026-09-11, updated 2026-09-12 at the end of the session. **Start here.*
   camera namespace in bag replay, Nx2 Follow paths, weights filename, pick class `UNKNOWN`,
   lookahead target stalling in unknown space (now `allow_unknown_target`).
 
-**Nothing is committed.** Three repos carry the work:
+**All of this has since been committed** (2026-09-12/13). The three repos that carried the work:
 
 | repo | files |
 |---|---|
@@ -33,21 +51,19 @@ Written 2026-09-11, updated 2026-09-12 at the end of the session. **Start here.*
 
 ```bash
 # environment (every ROS/test command below assumes this)
-cd ~/research/openset_nav_dir/dcist_ws
-source /opt/ros/jazzy/setup.bash && source ../open_set_sim/install/setup.bash && source install/setup.bash
-cd src/awesome_dcist_t4/spot_tools
-PY=~/research/openset_nav_dir/.venv/bin/python          # the venv every ROS python node runs in
+source <workspace>/open_set_sim/scripts/spot_env.sh      # ROS + dcist_ws + venv on PATH + secrets; prints a summary
+cd "$DCIST_WS/src/awesome_dcist_t4/spot_tools"
+PY="$OPEN_SET_PYTHON"                                     # the venv every ROS python node runs in
 
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 MPLBACKEND=Agg $PY -m pytest -q -m "not ros"   # 25 s
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 MPLBACKEND=Agg $PY -m pytest -q                # + ROS closed loop, ~3 min
 $PY tests/ros/fake_nav_harness.py --crop 8.0                                    # watch the fake robot
-$PY tests/ros/replay_planner_on_bag.py ~/research/openset_nav_dir/adt4_output/spot_bag_occupancy_20260911_192834/derived_bag
+$PY tests/ros/replay_planner_on_bag.py "$ADT4_OUTPUT_ROOT"/spot_bag_occupancy_<stamp>/derived_bag
 
 # task pipeline (GPU): perception service first, then the manifest
-cd ~/research/openset_nav_dir && source activate-open-set-navigation.sh
 open-set-perception-service --device cuda --port 8078 --top-k 32 --sam3-source "$OPEN_SET_SAM3_SOURCE" &
-cd open_set_sim && open-set-run manifests/spot_stack_bldg45_cup_to_table.yaml --output output/spot_stack_runs/<name>
-cd open_set_navigation && PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 ../../.venv/bin/python -m pytest tests/test_spot_stack.py
+cd "$OPEN_SET_SIM_ROOT" && open-set-run manifests/spot_stack_bldg45_cup_to_table.yaml --output output/spot_stack_runs/<name>
+cd open_set_navigation && PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $PY -m pytest tests/test_spot_stack.py
 ```
 
 If the colcon overlay is missing (fresh `dcist_ws/install`): see "Environment" below for the
@@ -60,11 +76,11 @@ six-package `colcon build` line (10 s).
    and the in-repo `example_parms.yaml`) now set `path_commitment_weight: 1.0`,
    `path_commitment_band: 0.5`, `allow_unknown_target: true`, `follow_progress_timeout: 20.0`.
    Code defaults stay off. Still yours: place semantics (`object_point` is ignored).
-2. **`robot: ros` dispatch is untested.** `SpotStackExecutor.dispatch_ros` publishes the compiled
-   `ActionSequenceMsg` to `/<robot>/omniplanner_node/compiled_plan_out`; run it against the fake
-   ROS stack (`tests/ros/fake_nav_harness.py` starts everything except the path publisher) before
-   trusting it. Also decide whether the on-robot path is this (open_set_navigation drives the ROS
-   executor) or `omniplanner_node` as in the field stack.
+2. ~~**`robot: ros` dispatch is untested.**~~ Done 2026-09-13, fake stack first and then the real
+   robot: `SpotStackExecutor.dispatch_ros` publishes the compiled `ActionSequenceMsg` to
+   `/<robot>/omniplanner_node/compiled_plan_out` and waits on
+   `/<robot>/spot_executor_node/action_sequence_result`. The on-robot path is open_set_navigation
+   driving the ROS executor; `omniplanner_node` is not used.
 3. **Robot-side pick frame for the perception service.** The service needs a keyframe layout
    (rgb + depth + `world_T_body` meta + `camera_calib.json`); `spot_sensors` publishes RGB and
    depth-in-visual-frame, so write a small "current frame -> keyframe dir" adapter and point
@@ -75,7 +91,8 @@ six-package `colcon build` line (10 s).
    through Hydra at `--rate 0.3` (`tests/ros/record_bag_occupancy.sh --rate 0.3`) for a complete
    occupancy stream; today's derived bag covers ~92 s of bag time.
 5. **On-robot order** (section at the end): E-stop rehearsal, `move.py goto`, executor with
-   `identity` planner on a short Follow, then `astar`, then Pick/Place — with the frame-drop fix.
+   `identity` planner on a short Follow, then `astar` — all done 2026-09-13 on the recorded map
+   (`tests/ros/run_spot_offline_plan.sh`). Pick/Place on the real robot is still open.
 6. Known open bugs are listed under "Bugs still open"; each has an `xfail(strict=True)` test that
    flips when fixed.
 
@@ -83,7 +100,7 @@ six-package `colcon build` line (10 s).
 
 ## Environment — what actually works on this machine
 
-- **Python:** `~/research/openset_nav_dir/.venv` (py3.12, uv). This is the venv the launch
+- **Python:** `<workspace>/.venv` (py3.12, uv; `$OPEN_SET_VENV_ROOT`). This is the venv the launch
   system's `pyenv_node` (ianvs) runs every ROS python node in (`ADT4_ENV/spark_env -> ../.venv`).
   Installed today: `bosdyn-{client,api,core}==5.2.0`, `scikit-image`, `onnxruntime`,
   `transforms3d`, `tf_transformations` (from git; not on PyPI, apt needs sudo), `pygame`,
@@ -106,21 +123,19 @@ six-package `colcon build` line (10 s).
 - **Weights:** only `yoloe-26l-seg.pt` exists (`open_set_sim/weights/`). All four
   `spot_executor_node.yaml` copies in `open_set_sim/dcist_launch_system` were switched from
   `26m` to `26l` (same change `docs/setup.md` documents for `instance_seg.yaml`).
-- **Env vars for the launch system:** `ADT4_WS=~/research/openset_nav_dir/open_set_sim`,
-  `ADT4_ENV=$ADT4_WS/.adt4_env`, `ADT4_ROBOT_NAME=hamilton`, `ADT4_OUTPUT_DIR`. Real
-  `ADT4_BOSDYN_IP/USERNAME/PASSWORD` are not in `secrets.env`; they are in the SDK repo's
-  git-ignored `env.sh` (`SPOT_IP`, `BOSDYN_CLIENT_*`). Dummies work for fake runs.
+- **Env vars for the launch system:** `ADT4_WS`, `ADT4_ENV` (`$ADT4_WS/.adt4_env`),
+  `ADT4_ROBOT_NAME=hamilton`, `ADT4_PLATFORM_ID=smaug`, `ADT4_PRIOR_MAP`, `ADT4_OUTPUT_DIR`, and
+  `ADT4_BOSDYN_IP/USERNAME/PASSWORD`. Since 2026-09-13 `open_set_sim/scripts/spot_env.sh` exports
+  all of them; the robot login comes from `<workspace>/secrets.env` (`BOSDYN_CLIENT_*`, template
+  `open_set_sim/secrets.env.example`). Dummies work for fake runs.
 
 ## How to run the tests
 
 ```bash
-cd ~/research/openset_nav_dir/dcist_ws
-source /opt/ros/jazzy/setup.bash
-source ../open_set_sim/install/setup.bash
-source install/setup.bash
-cd src/awesome_dcist_t4/spot_tools
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 MPLBACKEND=Agg ../../../../.venv/bin/python -m pytest -q           # everything (~3 min)
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 MPLBACKEND=Agg ../../../../.venv/bin/python -m pytest -q -m "not ros"  # ROS-free (~25 s)
+source <workspace>/open_set_sim/scripts/spot_env.sh
+cd "$DCIST_WS/src/awesome_dcist_t4/spot_tools"
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 MPLBACKEND=Agg "$OPEN_SET_PYTHON" -m pytest -q           # everything (~3 min)
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 MPLBACKEND=Agg "$OPEN_SET_PYTHON" -m pytest -q -m "not ros"  # ROS-free (~25 s)
 ```
 
 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` is required: Jazzy's `launch_testing` pytest plugins on
@@ -141,7 +156,7 @@ defects; when one is fixed the test flips to XPASS and fails until the mark is r
 | `tests/ros/record_bag_occupancy.sh` | replays the real bag through YOLOE + Hydra, records `/hamilton/hydra/tsdf/occupancy` + TF |
 | `tests/ros/replay_planner_on_bag.py` | offline planner evaluation on that derived bag |
 
-## Code changes (all uncommitted)
+## Code changes (2026-09-11/12; committed since)
 
 Fixes:
 - `spot_executor_ros.py`: optional imports (above); `self.get_logger.warn` -> `self.get_logger().warn`
@@ -281,16 +296,16 @@ reachable through the `dcist_ws/.../open_set_navigation` symlink):
     second SAM3 next to the service does not fit in 12 GB (CUDA OOM, first run).
   - `SpotStackExecutor` — `robot: fake` runs `SpotExecutor.process_action_sequence` in-process on
     `FakeSpot`; `robot: ros` publishes the `ActionSequenceMsg` to
-    `/<robot>/omniplanner_node/compiled_plan_out` for the ROS executor node (untested on ROS).
+    `/<robot>/omniplanner_node/compiled_plan_out` for the ROS executor node (verified on the real robot 2026-09-13).
 - `tests/test_spot_stack.py` (6 hermetic tests, no GPU).
 - Manifest `open_set_sim/manifests/spot_stack_bldg45_cup_to_table.yaml`: real Building 45 tour
   archive, fixed skeleton `visit cup / pick cup / visit table / place cup on table`, archive-only
   grounding, OmniPlanner, fake Spot. Run with the perception service up:
 
 ```bash
-cd ~/research/openset_nav_dir && source activate-open-set-navigation.sh
+source <workspace>/open_set_sim/scripts/spot_env.sh
 open-set-perception-service --device cuda --port 8078 --top-k 32 --sam3-source "$OPEN_SET_SAM3_SOURCE" &
-cd open_set_sim && open-set-run manifests/spot_stack_bldg45_cup_to_table.yaml --output output/spot_stack_runs/<name>
+cd "$OPEN_SET_SIM_ROOT" && open-set-run manifests/spot_stack_bldg45_cup_to_table.yaml --output output/spot_stack_runs/<name>
 ```
 
 Spot-side changes for this: `transform_command_frame` accepts Nx2 paths (compiled Follow paths are
@@ -321,7 +336,7 @@ Two failures on the way there, both instructive for the robot:
    class and `allow_unknown_target: true`. On the robot the same stall happens whenever a goal is
    beyond what Hydra has observed — `allow_unknown_target` is the switch to flip there too.
 
-Not done: `robot: ros` dispatch is written but untested against the ROS executor node; on the real
+Done since: `robot: ros` dispatch verified on the real robot 2026-09-13 (Follow only). Still open: on the real
 robot the pick-time frame needs depth + pose + `camera_calib.json` in the keyframe layout for the
 perception service (`spot_sensors` publishes depth-in-visual-frame, so that is plumbing, not new
 perception); kinematic fake motion was not used for this run (teleport).
@@ -357,9 +372,9 @@ perception); kinematic fake motion was not used for this run (teleport).
   the relative default `camera_rgb_topic` resolves to `/hamilton/hamilton_zed/hamilton_zed/...`.
   Always pass absolute camera topics (the bag script does).
 
-## On-robot order (nothing below was run)
+## On-robot order (items 1-3 done 2026-09-13 on the recorded map, see Status; item 4 not run)
 
-1. E-stop rehearsal per `~/research/spot_tools/NEXT_STEPS.md`, then `move.py goto 1 0` — same
+1. E-stop rehearsal per `open_set_sim/spot_sdk_scripts/NEXT_STEPS.md`, then `move.py goto 1 0` — same
    `synchro_se2_trajectory_point_command` the executor's `navigate_to_absolute_pose` uses.
 2. `spot_sensors` + executor with `mid_level_planner_type: identity`, one short Follow in
    `hamilton/odom` (`fake_path_publisher --map_frame hamilton/odom 2 0`), no Hydra.
