@@ -49,7 +49,9 @@ class YOLODetector(Detector):
         # Check if the class exists in the list (lowercase for consistency)
         if semantic_class.lower() not in [cls.lower() for cls in recognized_classes]:
             updated_classes = recognized_classes + [semantic_class.lower()]
-            self.yolo_model.model.set_classes(updated_classes)
+            # the YOLOE wrapper computes the text embeddings; the inner model's
+            # set_classes needs them passed in and fails on recent ultralytics
+            self.yolo_model.set_classes(updated_classes)
             print(f"Updated recognized classes: {updated_classes}")
 
     def return_centroid(self, img_source, semantic_class, debug):

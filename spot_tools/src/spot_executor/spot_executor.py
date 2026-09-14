@@ -134,7 +134,9 @@ class LeaseManager:
                     self.taking_back_lease = False
                 time.sleep(0.1)
 
-        self.monitoring_thread = threading.Thread(target=monitor_lease, daemon=False)
+        # daemon: this loop never ends on its own, and a non-daemon thread kept the
+        # executor process (and its claim on the robot lease) alive after Ctrl-C
+        self.monitoring_thread = threading.Thread(target=monitor_lease, daemon=True)
         self.monitoring_thread.start()
 
 
@@ -185,8 +187,12 @@ class SpotExecutor:
             time.sleep(1)
 
     def process_action_sequence(self, sequence, feedback):
+        """Run every action in order. Returns a list of {"action", "object_id", "success"}
+        (one per action) so callers can tell a completed sequence from a skipped one:
+        an action that fails twice is skipped, not retried forever."""
         self.processing_action_sequence = True
         self.keep_going = True
+        self.last_sequence_results = []
 
         try:
             feedback.print("INFO", "Would like to execute: ")
@@ -257,6 +263,13 @@ class SpotExecutor:
                             f"SpotExecutor received unknown command type {type(command)}"
                         )
                     if success or inner_loop_attempts > 1:
+                        self.last_sequence_results.append(
+                            {
+                                "action": type(command).__name__,
+                                "object_id": getattr(command, "object_id", ""),
+                                "success": bool(success),
+                            }
+                        )
                         ix += 1
                         inner_loop_attempts = 0
                     else:
@@ -274,6 +287,7 @@ class SpotExecutor:
             raise ex
 
         self.processing_action_sequence = False
+        return self.last_sequence_results
 
     def point_in_vision_frame(self, point, frame, feedback, what="point"):
         """Express a command point (given in `frame`) in Spot's vision/odom frame."""

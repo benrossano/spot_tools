@@ -42,7 +42,7 @@ FAKE_KINEMATIC=true
 RVIZ=1
 DISPATCH=1
 WATCH_S=0
-DOMAIN_ID=88
+DOMAIN_ID="${ROS_DOMAIN_ID:-88}"   # agrees with scripts/spot_env.sh; --domain-id overrides
 CHECK_ONLY=0
 while (($#)); do
   case "$1" in
@@ -140,17 +140,30 @@ pids=()
 # does nothing and its nodes outlive this script (stale static map->odom publishers
 # then fight the fiducial localizer on the next run). Signal the whole process tree.
 descendants() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do descendants "$c"; echo "$c"; done; }
-signal_trees() { local sig="$1" pid; for pid in "${pids[@]}"; do for p in $(descendants "$pid") "$pid"; do kill "-$sig" "$p" 2>/dev/null || true; done; done; }
-any_alive() { local pid; for pid in "${pids[@]}"; do kill -0 "$pid" 2>/dev/null && return 0; for p in $(descendants "$pid"); do kill -0 "$p" 2>/dev/null && return 0; done; done; return 1; }
+# Snapshot the tree BEFORE signalling: once `ros2 launch` exits, a node that ignores the
+# signal is re-parented to init and would otherwise drop out of the descendant walk and
+# survive (five orphaned executors, each holding the robot lease, is how this was found).
+ALL_PIDS=()
+snapshot_tree() { local pid; ALL_PIDS=(); for pid in "${pids[@]}"; do for p in $(descendants "$pid") "$pid"; do ALL_PIDS+=("$p"); done; done; }
+signal_all() { local sig="$1" p; for p in "${ALL_PIDS[@]}"; do kill "-$sig" "$p" 2>/dev/null || true; done; }
+any_alive() { local p; for p in "${ALL_PIDS[@]}"; do kill -0 "$p" 2>/dev/null && return 0; done; return 1; }
 cleanup() {
   trap - INT TERM EXIT
   echo; echo "Stopping..."
-  signal_trees INT
+  snapshot_tree
+  signal_all INT
   for _ in {1..20}; do any_alive || break; sleep 0.5; done
-  signal_trees TERM
+  signal_all TERM
   for _ in {1..20}; do any_alive || break; sleep 0.5; done
-  any_alive && signal_trees KILL
+  any_alive && signal_all KILL
   wait 2>/dev/null || true
+  if [[ -s "$OUT/robot_trajectory.csv" && -f "$MAP/occupancy_static.npz" ]]; then
+    plan_dir="$OUT/plan"; [[ -d "$plan_dir" ]] || plan_dir="$OUT"
+    env -u PYTHONPATH -u PYTHONHOME "$OPEN_SET_PYTHON" "$OPEN_SET_SIM_ROOT/scripts/plot_plan_on_occupancy.py" \
+      "$plan_dir" "$MAP/occupancy_static.npz" --trajectory "$OUT/robot_trajectory.csv" \
+      -o "$OUT/trajectory_on_occupancy.png" 2>/dev/null | sed 's/^/  /' || true
+    echo "Robot trajectory: $OUT/robot_trajectory.csv ($(($(wc -l <"$OUT/robot_trajectory.csv") - 1)) samples)"
+  fi
   echo "Output: $OUT  (plan: $OUT/plan, executor: $OUT/spot_executor, logs: $OUT/logs)"
 }
 trap cleanup EXIT
@@ -163,7 +176,9 @@ have_tf() {
   out="$(timeout 3 ros2 run tf2_ros tf2_echo "$1" "$2" 2>/dev/null || true)"
   [[ "$out" == *Translation* ]]
 }
-have_topic() { timeout 4 ros2 topic echo --once "$1" >/dev/null 2>&1; }
+# Periodic topics (the grids republish every 2 s) need a listen window longer than their
+# period; and never re-check after a successful loop, a second listen can simply miss a cycle.
+have_topic() { timeout 6 ros2 topic echo --once "$1" >/dev/null 2>&1; }
 tf_pose() {  # "x y yaw_deg" of child in parent, or nothing
   timeout 5 ros2 run tf2_ros tf2_echo "$1" "$2" 2>/dev/null | python3 -c '
 import re, sys, math
@@ -196,8 +211,9 @@ fi
 
 echo "[2/6] static occupancy grid from $MAP"
 env PYTHONPATH="$ROS_COMPAT_PYTHONPATH" "${launch[@]}" launch_static_occupancy_publisher:=true >"$OUT/logs/occupancy.log" 2>&1 & pids+=("$!")
-for _ in {1..30}; do have_topic "/$ROBOT/hydra/tsdf/occupancy" && break; sleep 1; done
-have_topic "/$ROBOT/hydra/tsdf/occupancy" || { echo "no /$ROBOT/hydra/tsdf/occupancy after 30 s; see $OUT/logs/occupancy.log" >&2; exit 1; }
+grid_up=0
+for _ in {1..15}; do have_topic "/$ROBOT/hydra/tsdf/occupancy" && { grid_up=1; break; }; sleep 1; done
+((grid_up)) || { echo "no /$ROBOT/hydra/tsdf/occupancy after ~90 s; see $OUT/logs/occupancy.log" >&2; exit 1; }
 echo "      grid publishing"
 
 if ((FAKE)); then
@@ -229,14 +245,25 @@ if ((FAKE)); then
 fi
 env PYTHONPATH="$ROS_COMPAT_PYTHONPATH" "${launch[@]}" launch_spot_executor:=true "${exec_args[@]}" >"$OUT/logs/executor.log" 2>&1 & pids+=("$!")
 exec_pid="${pids[-1]}"
-for _ in {1..90}; do
-  have_topic "/$ROBOT/spot_executor_node/inflated_occupancy_map" && break
+# The real executor loads the YOLOE pick detector at startup (torch, GPU), which can take
+# a few minutes the first time; the fake one skips it. Report progress while waiting.
+EXEC_START_TIMEOUT_S="${EXEC_START_TIMEOUT_S:-420}"
+t_exec=$(date +%s)
+until have_topic "/$ROBOT/spot_executor_node/inflated_occupancy_map"; do
   kill -0 "$exec_pid" 2>/dev/null || { echo "executor exited during startup; see $OUT/logs/executor.log" >&2; exit 1; }
-  sleep 1
+  if (( $(date +%s) - t_exec > EXEC_START_TIMEOUT_S )); then
+    echo "executor never published its inflated grid after ${EXEC_START_TIMEOUT_S} s; see $OUT/logs/executor.log" >&2; exit 1
+  fi
+  if grep -q "Initialized!" "$OUT/logs/executor.log" 2>/dev/null && ! grep -q "Pick is disabled\|Set classes" "$OUT/logs/executor.log" 2>/dev/null; then
+    echo "      connected to the robot; loading the pick detector (YOLOE)... $(( $(date +%s) - t_exec )) s"
+  fi
+  sleep 3
 done
-have_topic "/$ROBOT/spot_executor_node/inflated_occupancy_map" \
-  || { echo "executor never published its inflated grid after 90 s; see $OUT/logs/executor.log" >&2; exit 1; }
 echo "      executor has the grid (in $ROBOT/odom via TF); robot at map pose: $(tf_pose "$ROBOT/map" "$ROBOT/base_link")"
+
+# Record the robot's map-frame pose for the whole run (plotted over the map at exit).
+python3 "$_SELF_DIR/log_robot_trajectory.py" "$OUT/robot_trajectory.csv" --parent "$ROBOT/map" --child "$ROBOT/base_link" \
+  >"$OUT/logs/trajectory_logger.log" 2>&1 & pids+=("$!")
 
 if ((RVIZ)); then
   echo "[5/6] RViz"
@@ -255,7 +282,7 @@ if ((DISPATCH)); then
     tail -20 "$OUT/logs/plan.log" >&2 || true
     exit 1
   fi
-  grep -h "dispatched\|subscribers\|Follow\|start" "$OUT/plan/artifacts/execution.json" 2>/dev/null | head -5 | sed 's/^/      /' || true
+  (grep -h "dispatched\|robot_result\|\"success\"" "$OUT/plan/spot_stack/execution.json" 2>/dev/null || true) | head -4 | sed 's/^/      /'
   if [[ -f "$MAP/occupancy_static.npz" ]]; then
     env -u PYTHONPATH -u PYTHONHOME "$OPEN_SET_PYTHON" "$OPEN_SET_SIM_ROOT/scripts/plot_plan_on_occupancy.py" \
       "$OUT/plan" "$MAP/occupancy_static.npz" -o "$OUT/plan_on_occupancy.png" 2>/dev/null | sed 's/^/     /' || true
@@ -269,7 +296,8 @@ echo "Robot pose in $ROBOT/map (Ctrl-C to stop everything; executor log: $OUT/lo
 t0=$(date +%s)
 while kill -0 "$exec_pid" 2>/dev/null; do
   now=$(date +%s)
-  status="$(grep -h "Navigating to\|Finished\|reached\|Executing\|WARN\|ERROR" "$OUT/logs/executor.log" 2>/dev/null | tail -1 | sed 's/.*spot_executor_node\]: //' | cut -c1-90)"
+  # `|| true`: with --no-dispatch there is nothing to match yet, and a failing grep would end the script under set -e
+  status="$( (grep -h "Navigating to\|Finished\|reached\|Executing\|WARN\|ERROR" "$OUT/logs/executor.log" 2>/dev/null || true) | tail -1 | sed 's/.*spot_executor_node\]: //' | cut -c1-90)"
   echo "  t+$((now - t0))s  map pose (x y yaw_deg): $(tf_pose "$ROBOT/map" "$ROBOT/base_link")   $status"
   if ((WATCH_S > 0)) && ((now - t0 >= WATCH_S)); then echo "  watch window over"; break; fi
   sleep 3

@@ -609,7 +609,7 @@ class SpotExecutorRos(Node):
 
         else:
             self.get_logger().info("About to initialize Spot")
-            self.get_logger().info(f"{bdai_username=}, {bdai_password=}, {spot_ip=}")
+            self.get_logger().info(f"{bdai_username=}, password set: {bool(bdai_password)}, {spot_ip=}")
             self.spot_interface = Spot(
                 username=bdai_username,
                 password=bdai_password,
@@ -661,6 +661,18 @@ class SpotExecutorRos(Node):
         )
         self.spot_executor.initialize_lease_manager(self.feedback_collector)
 
+        # Optional GraphNav waypoint travel for Follow (graph_nav_enabled). Everything
+        # lives in graph_nav_executor_ros.py so this node stays a shell around SpotExecutor.
+        from spot_tools_ros.graph_nav_executor_ros import maybe_wrap_graph_nav
+
+        self.spot_executor = maybe_wrap_graph_nav(
+            self, self.spot_executor, use_fake_spot=use_fake_spot_interface
+        )
+
+        # One JSON String per finished (or aborted) sequence: {plan_id, success, actions,
+        # preempted, error}. Planners that dispatch over ROS wait on this to know when
+        # the robot is done (open_set_navigation spot_stack, wait_for_completion_s).
+        self.action_result_pub = self.create_publisher(String, "~/action_sequence_result", 10)
         self.action_sequence_sub = self.create_subscription(
             ActionSequenceMsg,
             "~/action_sequence_subscriber",
@@ -686,15 +698,29 @@ class SpotExecutorRos(Node):
 
     def process_action_sequence(self, msg):
         def process_sequence():
+            import json
+
             self.status_str = "Processing action sequence"
             self.get_logger().info("Starting action sequence")
             sequence = from_msg(msg)
-
-            self.spot_executor.process_action_sequence(
-                sequence, self.feedback_collector
-            )
-            self.get_logger().info("Finished execution action sequence.")
+            result = {"plan_id": sequence.plan_id, "success": False, "actions": [], "preempted": False}
+            try:
+                outcomes = self.spot_executor.process_action_sequence(
+                    sequence, self.feedback_collector
+                ) or []
+                result["actions"] = outcomes
+                result["preempted"] = not self.spot_executor.keep_going
+                result["success"] = (
+                    len(outcomes) == len(sequence.actions)
+                    and all(o["success"] for o in outcomes)
+                    and not result["preempted"]
+                )
+            except Exception as exc:  # noqa: BLE001
+                result["error"] = f"{type(exc).__name__}: {exc}"
+                self.get_logger().error(f"action sequence failed: {result['error']}")
+            self.get_logger().info(f"Finished execution action sequence. success={result['success']}")
             self.status_str = "Idle"
+            self.action_result_pub.publish(String(data=json.dumps(result)))
 
         if self.background_thread is not None and self.background_thread.is_alive():
             self.spot_executor.terminate_sequence(self.feedback_collector)
@@ -719,7 +745,9 @@ def main(args=None):
             ros_executor.shutdown()
             node.destroy_node()
     finally:
-        rclpy.shutdown()
+        # try_shutdown: a second shutdown (Ctrl-C during startup already shut the context
+        # down) must not raise and bury the exception that actually stopped the node
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":
