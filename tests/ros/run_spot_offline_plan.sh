@@ -102,10 +102,13 @@ export ROS_LOG_DIR="$OUT/logs/ros"
 export ROS_DOMAIN_ID="$DOMAIN_ID"
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 unset ROS_LOCALHOST_ONLY
-# ROS python nodes need numpy 1.x next to Jazzy's compiled bindings; prepend a compat site only if the venv is numpy >= 2
-ROS_NUMPY1_SITE="${ROS_NUMPY1_SITE:-$HOME/.local/lib/python3.12/site-packages}"
+# ROS python nodes run from the venv need numpy 1.x: Jazzy's compiled bindings (cv_bridge) were
+# built against it and refuse to load under the venv's numpy 2. $ROS_NUMPY1_SITE (paths.sh;
+# created by scripts/setup.sh) is prepended only when the venv actually ships numpy >= 2.
 ROS_COMPAT_PYTHONPATH="${PYTHONPATH:-}"
+NEED_NUMPY1_COMPAT=0
 if "$OPEN_SET_PYTHON" -c 'import numpy, sys; sys.exit(0 if int(numpy.__version__.split(".")[0]) >= 2 else 1)' 2>/dev/null; then
+  NEED_NUMPY1_COMPAT=1
   ROS_COMPAT_PYTHONPATH="$ROS_NUMPY1_SITE${PYTHONPATH:+:$PYTHONPATH}"
 fi
 PERCEPTION_URL="$(grep -E '^\s*perception_service_url:' "$MANIFEST" 2>/dev/null | head -1 | awk '{print $2}' || true)"
@@ -126,6 +129,9 @@ if ((DISPATCH)); then
   check "fast-downward on PATH (scripts/setup.sh builds it into the venv)" "command -v fast-downward"
 fi
 check "venv sees ROS (rclpy + robot_executor_msgs)" "$OPEN_SET_PYTHON -c 'import rclpy, robot_executor_msgs.msg, spot_tools_ros.fiducial_localization'"
+if ((NEED_NUMPY1_COMPAT)); then
+  check "venv has numpy>=2: numpy 1.x site $ROS_NUMPY1_SITE (scripts/setup.sh creates it)" "test -f $ROS_NUMPY1_SITE/numpy/__init__.py"
+fi
 if ((FAKE)); then
   check "fake anchor '$FAKE_ANCHOR' and start '$FAKE_START' are 'x y yaw'" "[[ \$(wc -w <<<'$FAKE_ANCHOR') == 3 && \$(wc -w <<<'$FAKE_START') == 3 ]]"
 else

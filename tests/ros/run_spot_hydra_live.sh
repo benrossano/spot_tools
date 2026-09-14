@@ -22,10 +22,11 @@ set -euo pipefail
 # Fall back to the checkout this script lives in rather than a fixed path:
 # .../<workspace>/open_set_sim/spot_tools/tests/ros/ -> <workspace>
 _SELF_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
-OPEN_SET_NAV=${OPEN_SET_NAV_WORKSPACE:-$(cd "$_SELF_DIR/../../../.." && pwd)}
-ADT4_WS_DIR=${ADT4_WS:-$OPEN_SET_NAV/open_set_sim}
-DCIST_WS=${DCIST_WS:-$OPEN_SET_NAV/dcist_ws}
-ZED_WS=${ZED_WS:-$HOME/zed_ws}
+# All roots (workspace, dcist_ws, venv, ZED workspace, numpy-1 site) from the shared registry.
+# shellcheck disable=SC1091
+source "$_SELF_DIR/../../../scripts/lib/paths.sh"
+OPEN_SET_NAV=${OPEN_SET_NAV_WORKSPACE:-$OPEN_SET_WORKSPACE_ROOT}
+ADT4_WS_DIR=${ADT4_WS:-$OPEN_SET_SIM_ROOT}
 ROBOT=hamilton
 PLATFORM=smaug
 OUT=""
@@ -86,7 +87,6 @@ export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 unset ROS_LOCALHOST_ONLY
 # ROS python nodes (sensor node, YOLOE) need numpy 1.x next to Jazzy's compiled bindings; only
 # prepend a compat site when the venv itself ships numpy >= 2
-ROS_NUMPY1_SITE="${ROS_NUMPY1_SITE:-$HOME/.local/lib/python3.12/site-packages}"
 VENV_PY="$ADT4_ENV/spark_env/bin/python"
 NEED_NUMPY1_COMPAT=0
 ROS_COMPAT_PYTHONPATH="${PYTHONPATH:-}"
@@ -108,7 +108,7 @@ check "YOLOE weights $ADT4_WS/weights/yoloe-26l-seg.pt" "test -f $ADT4_WS/weight
 check "hydra_ros / semantic_inference_ros / spot_tools_ros / ianvs built" "ros2 pkg prefix hydra_ros && ros2 pkg prefix semantic_inference_ros && ros2 pkg prefix spot_tools_ros && ros2 pkg prefix ianvs"
 check "spot_tools_ros + bosdyn importable in the venv" "$VENV_PY -c 'import spot_tools_ros.spot_sensors, bosdyn.client'"
 if ((NEED_NUMPY1_COMPAT)); then
-  check "venv has numpy>=2: numpy 1.x compat site present ($ROS_NUMPY1_SITE)" "test -f $ROS_NUMPY1_SITE/numpy/__init__.py"
+  check "venv has numpy>=2: numpy 1.x site $ROS_NUMPY1_SITE (scripts/setup.sh creates it)" "test -f $ROS_NUMPY1_SITE/numpy/__init__.py"
 elif [[ -x "$VENV_PY" ]]; then
   echo "  ok    venv numpy < 2, no compat site needed"
 fi
