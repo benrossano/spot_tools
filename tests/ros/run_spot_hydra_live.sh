@@ -22,7 +22,7 @@ set -euo pipefail
 # Fall back to the checkout this script lives in rather than a fixed path:
 # .../<workspace>/open_set_sim/spot_tools/tests/ros/ -> <workspace>
 _SELF_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
-# All roots (workspace, dcist_ws, venv, ZED workspace, numpy-1 site) from the shared registry.
+# All roots (workspace, dcist_ws, venv, ZED workspace) from the shared registry.
 # shellcheck disable=SC1091
 source "$_SELF_DIR/../../../scripts/lib/paths.sh"
 OPEN_SET_NAV=${OPEN_SET_NAV_WORKSPACE:-$OPEN_SET_WORKSPACE_ROOT}
@@ -85,15 +85,12 @@ export ROS_LOG_DIR="$OUT/logs/ros"
 export ROS_DOMAIN_ID="$DOMAIN_ID"
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 unset ROS_LOCALHOST_ONLY
-# ROS python nodes (sensor node, YOLOE) need numpy 1.x next to Jazzy's compiled bindings; only
-# prepend a compat site when the venv itself ships numpy >= 2
+# ROS python nodes (sensor node, YOLOE) run from the venv with its one numpy: scripts/setup.sh
+# rebuilt cv_bridge against it; ros_node_pythonpath (scripts/lib/ros_python_env.sh) verifies.
 VENV_PY="$ADT4_ENV/spark_env/bin/python"
-NEED_NUMPY1_COMPAT=0
-ROS_COMPAT_PYTHONPATH="${PYTHONPATH:-}"
-if [[ -x "$VENV_PY" ]] && "$VENV_PY" -c 'import numpy, sys; sys.exit(0 if int(numpy.__version__.split(".")[0]) >= 2 else 1)' 2>/dev/null; then
-  NEED_NUMPY1_COMPAT=1
-  ROS_COMPAT_PYTHONPATH="$ROS_NUMPY1_SITE${PYTHONPATH:+:$PYTHONPATH}"
-fi
+# shellcheck disable=SC1091
+source "$OPEN_SET_SIM_ROOT/scripts/lib/ros_python_env.sh"
+ROS_COMPAT_PYTHONPATH="$(ros_node_pythonpath "$VENV_PY" 2>/dev/null || printf '%s' "${PYTHONPATH:-}")"
 
 # ---------------------------------------------------------------- preflight
 fail=0
@@ -107,11 +104,7 @@ check "GPU visible" "nvidia-smi"
 check "YOLOE weights $ADT4_WS/weights/yoloe-26l-seg.pt" "test -f $ADT4_WS/weights/yoloe-26l-seg.pt"
 check "hydra_ros / semantic_inference_ros / spot_tools_ros / ianvs built" "ros2 pkg prefix hydra_ros && ros2 pkg prefix semantic_inference_ros && ros2 pkg prefix spot_tools_ros && ros2 pkg prefix ianvs"
 check "spot_tools_ros + bosdyn importable in the venv" "$VENV_PY -c 'import spot_tools_ros.spot_sensors, bosdyn.client'"
-if ((NEED_NUMPY1_COMPAT)); then
-  check "venv has numpy>=2: numpy 1.x site $ROS_NUMPY1_SITE (scripts/setup.sh creates it)" "test -f $ROS_NUMPY1_SITE/numpy/__init__.py"
-elif [[ -x "$VENV_PY" ]]; then
-  echo "  ok    venv numpy < 2, no compat site needed"
-fi
+check "cv_bridge loads under the venv's numpy (one numpy; scripts/setup.sh rebuilds it)" "ros_node_pythonpath $VENV_PY"
 check "platform calibration $LAUNCH_SHARE/platforms/$PLATFORM/calibration.yaml" "test -f $LAUNCH_SHARE/platforms/$PLATFORM/calibration.yaml"
 check "spot URDF $SPOT_TOOLS_ROS_SHARE/urdf/spot.urdf.xacro" "test -f $SPOT_TOOLS_ROS_SHARE/urdf/spot.urdf.xacro"
 if [[ "$ZED" == "local" ]]; then

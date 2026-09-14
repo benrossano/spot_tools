@@ -9,11 +9,13 @@
 #   tests/ros/record_bag_occupancy.sh [--bag DIR] [--out DIR] [--rate R] [--duration S] [--domain-id N]
 set -euo pipefail
 
-OPEN_SET_NAV=/home/ben-rossano/research/openset_nav_dir
-ADT4_WS_DIR=$OPEN_SET_NAV/open_set_sim
-DCIST_WS=$OPEN_SET_NAV/dcist_ws
-BAG=/home/ben-rossano/spot_bags/bulding_1_infinite/recorded_data
-OUT=$OPEN_SET_NAV/adt4_output/spot_bag_occupancy_$(date +%Y%m%d_%H%M%S)
+# All roots from the shared registry (scripts/lib/paths.sh, overrides in ../paths.env).
+_SELF_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck disable=SC1091
+source "$_SELF_DIR/../../../scripts/lib/paths.sh"
+ADT4_WS_DIR=$OPEN_SET_SIM_ROOT
+BAG=${SPOT_BAG:-$HOME/spot_bags/bulding_1_infinite/recorded_data}
+OUT=$ADT4_OUTPUT_ROOT/spot_bag_occupancy_$(date +%Y%m%d_%H%M%S)
 RATE=1.0
 DURATION=""
 DOMAIN_ID=88
@@ -48,10 +50,10 @@ export ROS_LOG_DIR="$OUT/logs/ros"
 export ROS_DOMAIN_ID="$DOMAIN_ID"
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 unset ROS_LOCALHOST_ONLY
-# ROS python nodes need numpy 1.x next to Jazzy's compiled bindings (see run_behavior1k_bag.sh)
-ROS_NUMPY1_SITE="${ROS_NUMPY1_SITE:-$HOME/.local/lib/python3.12/site-packages}"
-[[ -f "$ROS_NUMPY1_SITE/numpy/__init__.py" ]] || { echo "numpy-1 compat site missing: $ROS_NUMPY1_SITE" >&2; exit 1; }
-ROS_COMPAT_PYTHONPATH="$ROS_NUMPY1_SITE${PYTHONPATH:+:$PYTHONPATH}"
+# ROS python nodes run from the venv with its one numpy (cv_bridge rebuilt by scripts/setup.sh).
+# shellcheck disable=SC1091
+source "$OPEN_SET_SIM_ROOT/scripts/lib/ros_python_env.sh"
+ROS_COMPAT_PYTHONPATH="$(ros_node_pythonpath "$OPEN_SET_PYTHON")" || exit 1
 
 pids=()
 cleanup() {

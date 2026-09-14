@@ -94,10 +94,12 @@ six-package `colcon build` line (10 s).
   `colcon build --symlink-install --packages-select robot_executor_msgs heracles_ros_interfaces
   robot_executor_interface robot_executor_interface_ros spot_tools spot_tools_ros`
   from `dcist_ws` (10 s). Source order: `/opt/ros/jazzy`, `open_set_sim/install`, `dcist_ws/install`.
-- **numpy 2 vs Jazzy:** the venv has numpy 2.5; Jazzy's compiled `cv_bridge` needs numpy 1.x.
-  The workspace's existing workaround is `ROS_COMPAT_PYTHONPATH` (`~/.local/lib/python3.12/site-packages`
-  = numpy 1.26) prepended for ROS python nodes (see `open_set_sim/scripts/run_behavior1k_bag.sh`).
-  `spot_executor_ros.py` now imports `cv_bridge` optionally, so the executor runs either way.
+- **numpy 2 vs Jazzy:** the venv has numpy 2.5; Jazzy's apt `cv_bridge` is compiled against
+  numpy 1.x. Since 2026-09-14 `scripts/setup.sh` rebuilds `cv_bridge` (vision_opencv 4.1.0) in
+  `dcist_ws` against the venv's numpy headers, so one numpy serves everything; the run scripts
+  verify it through `scripts/lib/ros_python_env.sh` (`ros_node_pythonpath`). The older
+  `ROS_COMPAT_PYTHONPATH` numpy-1 overlay is only a fallback if that build is missing.
+  `spot_executor_ros.py` imports `cv_bridge` optionally, so the executor runs either way.
 - **Missing packages:** `nlu_interface_rviz` (pick-approval UI) and `ros_system_monitor_msgs`
   (heartbeat) exist nowhere on this machine. Both imports are now optional; without them the
   executor auto-approves the detector's pick candidate and skips the heartbeat.
