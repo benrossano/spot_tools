@@ -59,7 +59,13 @@ source /opt/ros/jazzy/setup.bash
 source "$DCIST_WS/install/setup.bash"
 [[ -f "$ZED_WS/install/setup.bash" ]] && source "$ZED_WS/install/setup.bash"
 set -u
-# robot credentials: accept the spot-sdk-scripts names too
+# robot credentials: <workspace>/secrets.env (see open_set_sim/secrets.env.example), else whatever is exported
+if [[ -f "$OPEN_SET_NAV/secrets.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$OPEN_SET_NAV/secrets.env"
+  set +a
+fi
 export ADT4_BOSDYN_IP="${ADT4_BOSDYN_IP:-${SPOT_IP:-192.168.80.3}}"
 export ADT4_BOSDYN_USERNAME="${ADT4_BOSDYN_USERNAME:-${BOSDYN_CLIENT_USERNAME:-}}"
 export ADT4_BOSDYN_PASSWORD="${ADT4_BOSDYN_PASSWORD:-${BOSDYN_CLIENT_PASSWORD:-}}"

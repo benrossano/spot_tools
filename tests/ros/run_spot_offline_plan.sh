@@ -22,8 +22,9 @@
 # conversion the real run depends on, with nothing that can move.
 #
 # Needs: the recorded run (bag not required at run time; fiducials.yaml + occupancy_static.npz are), a dcist_ws
-# install with spot_tools_ros + dcist_launch_system, the venv, and for the real robot ADT4_BOSDYN_IP /
-# ADT4_BOSDYN_USERNAME / ADT4_BOSDYN_PASSWORD (or BOSDYN_CLIENT_* + SPOT_IP from spot-sdk-scripts env.sh).
+# install with spot_tools_ros + dcist_launch_system, the venv, and for the real robot the login in
+# <workspace>/secrets.env (BOSDYN_CLIENT_USERNAME/PASSWORD [+ SPOT_IP]; see secrets.env.example), or the
+# ADT4_BOSDYN_* variables already exported (scripts/spot_env.sh does all of this).
 set -euo pipefail
 
 _SELF_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
@@ -68,6 +69,13 @@ MAP="$(realpath "$MAP")"
 [[ -z "$OUT" ]] && OUT="$ADT4_OUTPUT_ROOT/spot_offline_$(date +%Y%m%d_%H%M%S)"
 
 # ---------------------------------------------------------------- environment
+# every secret (robot login, API keys) lives in one file at the workspace root; see secrets.env.example
+if [[ -f "$OPEN_SET_WORKSPACE_ROOT/secrets.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$OPEN_SET_WORKSPACE_ROOT/secrets.env"
+  set +a
+fi
 set +u
 source /opt/ros/jazzy/setup.bash
 source "$DCIST_INSTALL/setup.bash"
